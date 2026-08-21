@@ -1,0 +1,1 @@
+- [Somnia testnet boundary](somnia-testnet.md) — Keep all initial bot trading and wallet activity on Somnia Shannon testnet only.
