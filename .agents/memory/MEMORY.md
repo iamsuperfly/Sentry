@@ -1,1 +1,2 @@
 - [Somnia testnet boundary](somnia-testnet.md) — Keep all initial bot trading and wallet activity on Somnia Shannon testnet only.
+- [grammY bundling](grammy-bundling.md) — Keep grammY external in the Node esbuild bundle so its platform adapter resolves correctly.
