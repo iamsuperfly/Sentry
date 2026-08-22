@@ -1,10 +1,10 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "buildCommand": "pnpm --filter @workspace/api-server run build"
+    "buildCommand": "corepack pnpm --filter @workspace/api-server run build"
   },
   "deploy": {
-    "startCommand": "pnpm --filter @workspace/api-server run start",
+    "startCommand": "corepack pnpm --filter @workspace/api-server run start",
     "healthcheckPath": "/api/healthz",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
