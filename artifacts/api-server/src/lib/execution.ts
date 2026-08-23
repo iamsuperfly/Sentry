@@ -1,5 +1,5 @@
-import type { StrategyDecision } from "./strategy";
-import { evaluateRisk, type UserRiskSettings } from "./risk";
+import type { StrategyDecision } from "./strategy.ts";
+import { evaluateRisk, type UserRiskSettings } from "./risk.ts";
 
 /** Stage 3 execution layer — intents + state machine. Live chain submit is gated. */
 
@@ -145,7 +145,6 @@ export function buildTradeIntent(input: {
   };
 }
 
-/** Allowed status transitions for execution tracking. */
 const TRANSITIONS: Record<IntentStatus, IntentStatus[]> = {
   pending: ["submitted", "failed", "cancelled"],
   submitted: ["partially_filled", "filled", "failed", "cancelled"],
@@ -177,13 +176,6 @@ export function transitionIntent(
   return { ok: true, status: next };
 }
 
-/**
- * Live on-chain submit is intentionally not invoked unless the caller passes
- * liveExecution=true AND config.enableLiveExecution is true.
- *
- * Signing uses the *user* wallet private key (AES-GCM decrypted in memory),
- * never the treasury key. Treasury remains STT gas sponsorship only.
- */
 export type LiveSubmitGate = {
   enableLiveExecution: boolean;
   liveExecutionRequested: boolean;
@@ -211,8 +203,8 @@ export function assertLiveSubmitAllowed(
 }
 
 /**
- * Documents the on-chain steps Stage 3 will perform when live submit is enabled.
- * Kept as data (not executed here) so tests and operators can inspect the plan.
+ * On-chain steps when live submit is enabled. Signer is always the user wallet
+ * (never treasury). Treasury remains STT gas sponsorship only.
  */
 export function planLiveSubmission(intent: TradeIntent): {
   steps: string[];
