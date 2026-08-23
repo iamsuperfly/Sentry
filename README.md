@@ -60,6 +60,27 @@ The tUSDC contract address is:
 - `/privatekey` — retrieve the encrypted wallet's private key; the Telegram message is protected and scheduled for deletion
 - `/help` — show available commands
 
+## Stage 1 read-only DreamDEX diagnostics
+
+The server exposes a read-only market diagnostic at:
+
+```text
+GET /api/dreamdex/markets
+GET /api/dreamdex/markets?asset=BTC
+GET /api/dreamdex/markets?asset=ETH
+```
+
+It uses `@somnia-chain/markets-sdk` `0.28.1` with the official Somnia Shannon
+configuration (chain ID `50312`) to discover binary markets, keep only BTC and
+ETH, read each market by its `marketId`, resolve the current pool/window
+binding, read authoritative on-chain status, and read the four-sided order
+book. A market is marked `tradable` only when both the indexer status is
+`Trading` and the live on-chain status is `1`.
+
+This endpoint performs no approvals, orders, minting, merging, redemption,
+funding, or database writes. It is intentionally separate from Telegram
+handlers and wallet/funding code.
+
 ## Setup
 
 Install dependencies with pnpm, then apply the Supabase migrations manually in
