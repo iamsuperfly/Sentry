@@ -1,5 +1,12 @@
 import type { StrategyDecision } from "./strategy.ts";
-import { evaluateRisk, type UserRiskSettings } from "./risk.ts";
+import {
+  evaluateRisk,
+  type UserRiskSettings,
+} from "./risk.ts";
+import {
+  DEFAULT_SYSTEM_LIMITS,
+  type SystemRiskLimits,
+} from "./system-limits.ts";
 
 /** Stage 3 execution layer — intents + state machine. Live chain submit is gated. */
 
@@ -61,19 +68,21 @@ export function buildIdempotencyKey(input: {
 }
 
 /**
- * Convert a Stage 2 enter decision into a trade intent after risk checks.
+ * Convert a Stage 2 enter decision into a trade intent after system+user risk.
  * Does not touch the chain or database — pure.
+ * Protocol tick/lot/status checks remain for the live execution path.
  */
 export function buildTradeIntent(input: {
   userId: string;
   walletAddress: string;
   decision: StrategyDecision;
   settings: UserRiskSettings;
+  system?: SystemRiskLimits;
   stake?: number;
-  /** Existing row with same idempotency key (if any). */
   existing?: { status: IntentStatus; idempotencyKey: string } | null;
 }): IntentBuildResult {
   const { decision } = input;
+  const system = input.system ?? DEFAULT_SYSTEM_LIMITS;
   const idempotencyKey = buildIdempotencyKey({
     userId: input.userId,
     marketId: decision.marketId,
@@ -82,11 +91,16 @@ export function buildTradeIntent(input: {
     direction: decision.direction ?? "YES",
   });
 
-  if (decision.action !== "enter" || !decision.direction || decision.limitPriceHint == null) {
+  if (
+    decision.action !== "enter" ||
+    !decision.direction ||
+    decision.limitPriceHint == null
+  ) {
     return {
       ok: false,
       code: "not_enter",
-      reason: "Only Stage 2 enter decisions with direction and limitPriceHint can become intents.",
+      reason:
+        "Only Stage 2 enter decisions with direction and limitPriceHint can become intents.",
       idempotencyKey,
     };
   }
@@ -106,9 +120,10 @@ export function buildTradeIntent(input: {
   }
 
   const risk = evaluateRisk({
-    stake: input.stake ?? input.settings.defaultStake,
+    stake: input.stake,
     limitPrice: decision.limitPriceHint,
     settings: input.settings,
+    system,
   });
 
   if (!risk.ok) {
@@ -203,8 +218,9 @@ export function assertLiveSubmitAllowed(
 }
 
 /**
- * On-chain steps when live submit is enabled. Signer is always the user wallet
- * (never treasury). Treasury remains STT gas sponsorship only.
+ * Planned on-chain steps when live submit is enabled.
+ * Signer is always the user wallet (never treasury).
+ * Protocol checks (Trading status, tick, lot, tUSDC allowance) belong here — not in user risk prefs.
  */
 export function planLiveSubmission(intent: TradeIntent): {
   steps: string[];
@@ -216,14 +232,17 @@ export function planLiveSubmission(intent: TradeIntent): {
   poolAddress: string;
   limitPrice: number;
   contracts: number;
+  collateralToken: "tUSDC";
+  collateralAddress: "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E";
 } {
   return {
     steps: [
       "Decrypt user encrypted_private_key in memory (WALLET_ENCRYPTION_KEY).",
       "Construct SomniaMarkets with user privateKey (never treasury).",
-      "Re-read getMarketOnchain(marketId); abort if status !== Trading.",
-      "Ensure ERC-20 allowance of collateral to current pool (approve if needed).",
-      "Place IOC buy on YES or NO outcome at limitPriceHint for computed contracts.",
+      "PROTOCOL: Re-read getMarketOnchain(marketId); abort if status !== Trading.",
+      "PROTOCOL: Snap price to pool tick grid; snap size to lot grid; abort if size becomes 0.",
+      "PROTOCOL: Ensure tUSDC (0x70a86D…) allowance to current pool; approve if needed.",
+      "Place IOC buy on YES or NO at limitPrice for contracts.",
       "Persist transaction hash / fill size; transition pending → submitted → filled|failed.",
     ],
     signer: "user_wallet",
@@ -234,5 +253,7 @@ export function planLiveSubmission(intent: TradeIntent): {
     poolAddress: intent.poolAddress,
     limitPrice: intent.limitPrice,
     contracts: intent.contracts,
+    collateralToken: "tUSDC",
+    collateralAddress: "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E",
   };
 }
