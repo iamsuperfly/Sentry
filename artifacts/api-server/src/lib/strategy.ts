@@ -120,8 +120,8 @@ export function secondsToExpiry(
 ): number | null {
   const expiryNum = Number(expiry);
   if (!Number.isFinite(expiryNum)) return null;
-  // Accept seconds or milliseconds.
-  const expirySec = expiryNum > 1e12 ? expiryNum / 1000 : expiryNum;
+  // Unix ms timestamps are ~1e12+; seconds are ~1e9.
+  const expirySec = expiryNum >= 1e12 ? expiryNum / 1000 : expiryNum;
   return expirySec - nowSeconds;
 }
 
@@ -266,7 +266,6 @@ export function evaluateMarket(
   const enterYesCeiling = FAIR_PROBABILITY - config.edgeThreshold;
   const enterNoFloor = FAIR_PROBABILITY + config.edgeThreshold;
 
-  // Prefer explicit YES ask; NO can be taken via noAsk or inferred from yesBid.
   if (book.yesAsk !== null && book.yesAsk <= enterYesCeiling) {
     const edge = FAIR_PROBABILITY - book.yesAsk;
     return {
@@ -323,7 +322,6 @@ export function evaluateMarket(
     };
   }
 
-  // Implied cheap NO: expensive YES ask means market prices YES high.
   if (book.yesAsk !== null && book.yesAsk >= enterNoFloor) {
     const edge = book.yesAsk - FAIR_PROBABILITY;
     const impliedNo = 1 - book.yesAsk;

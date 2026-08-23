@@ -43,7 +43,6 @@ function market(
   };
 }
 
-/** 0.40 probability at 6 decimals */
 const p = (human: number, decimals = 6) =>
   String(Math.round(human * 10 ** decimals));
 
@@ -53,7 +52,7 @@ describe("secondsToExpiry", () => {
   });
 
   it("handles unix milliseconds", () => {
-    assert.equal(secondsToExpiry("1000000", 900), 100);
+    assert.equal(secondsToExpiry("1000000000000", 900_000_000), 100_000_000);
   });
 });
 
@@ -138,7 +137,7 @@ describe("evaluateMarket", () => {
   });
 
   it("enters YES when yesAsk is sufficiently below fair", () => {
-    const yesAsk = FAIR_PROBABILITY - DEFAULT_EDGE_THRESHOLD; // 0.42
+    const yesAsk = FAIR_PROBABILITY - DEFAULT_EDGE_THRESHOLD;
     const d = evaluateMarket(
       market({
         marketId: "0xyes",
