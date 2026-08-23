@@ -117,6 +117,18 @@ export async function receipt(config: AppConfig, hash: Hash) {
   return { status: result.status === "success" ? "confirmed" : "failed", blockNumber: Number(result.blockNumber) };
 }
 
+export async function inspectReceipt(config: AppConfig, hash: Hash) {
+  try {
+    const result = await client(config).getTransactionReceipt({ hash });
+    return {
+      status: result.status === "success" ? "confirmed" : "failed",
+      blockNumber: Number(result.blockNumber),
+    } as const;
+  } catch {
+    return null;
+  }
+}
+
 export function explorer(config: AppConfig, hash: string) {
   return `${config.explorerTxBaseUrl.replace(/\/$/, "")}/${hash}`;
 }

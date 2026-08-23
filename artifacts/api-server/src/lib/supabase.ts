@@ -130,3 +130,24 @@ export async function updateTransaction(config: AppConfig, id: string, update: R
     .eq("id", id);
   if (error) throw new Error("Unable to update transaction record.");
 }
+
+export async function getOnboardingTransactions(
+  config: AppConfig,
+  userId: string,
+  walletAddress: string,
+) {
+  const { data, error } = await getSupabaseClient(config)
+    .from("blockchain_transactions")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("wallet_address", walletAddress)
+    .in("type", ["INITIAL_STT_SPONSOR", "TUSDC_FAUCET"])
+    .order("created_at", { ascending: false });
+  if (error) throw new Error("Unable to read onboarding transactions.");
+  return data as Array<{
+    id: string;
+    type: "INITIAL_STT_SPONSOR" | "TUSDC_FAUCET";
+    transaction_hash: `0x${string}` | null;
+    status: "pending" | "submitted" | "confirmed" | "failed";
+  }>;
+}
