@@ -115,3 +115,7 @@ $$;
 
 revoke all on function public.get_faucet_allowance(uuid) from public;
 revoke all on function public.reserve_faucet_transaction(uuid, text, numeric) from public;
+
+-- Backend uses SUPABASE_SERVICE_ROLE_KEY (role: service_role).
+grant execute on function public.get_faucet_allowance(uuid) to service_role;
+grant execute on function public.reserve_faucet_transaction(uuid, text, numeric) to service_role;
