@@ -22,12 +22,11 @@ When a user runs `/start`, the bot:
 1. Creates one dedicated EVM wallet for the Telegram user.
 2. Encrypts the private key with AES-256-GCM before storing it in Supabase.
 3. Sends `0.1 STT` from the treasury wallet to the new wallet.
-4. Calls the verified tUSDC faucet from the user wallet.
-5. Tracks both blockchain transactions and reports their status with explorer links.
-6. Shows the resulting live balances.
+4. Tracks the STT transaction and reports its status with an explorer link.
+5. Shows the resulting live balances and explains how to request tUSDC.
 
 If onboarding is interrupted, `/start` reuses the existing wallet and resumes
-the missing funding step. `/fund` provides the same manual recovery path.
+the missing STT funding step. `/fund` provides the same manual recovery path.
 Confirmed transactions are preserved and pending transactions are not
 resubmitted.
 
@@ -43,7 +42,8 @@ The bot uses:
 
 - `STT` for Somnia testnet gas
 - `tUSDC` from the configured testnet faucet
-- Default initial funding of `0.1 STT` and `20 tUSDC`
+- Default initial funding of `0.1 STT`
+- A maximum faucet allowance of `500 tUSDC` per Telegram user per UTC day
 
 The tUSDC contract address is:
 
@@ -54,8 +54,9 @@ The tUSDC contract address is:
 ## Telegram commands
 
 - `/start` — create a wallet or resume onboarding
-- `/fund` — manually resume missing wallet funding
-- `/status` — view the wallet address and live STT/tUSDC balances
+- `/faucet <amount>` — request tUSDC, up to 500 per UTC day
+- `/status` — view wallet address, live balances, and faucet allowance
+- `/fund` — manually resume interrupted STT funding
 - `/privatekey` — retrieve the encrypted wallet's private key; the Telegram message is protected and scheduled for deletion
 - `/help` — show available commands
 
@@ -67,6 +68,7 @@ this order:
 ```text
 supabase/migrations/0001_initial_schema.sql
 supabase/migrations/0002_wallet_funding.sql
+supabase/migrations/0003_faucet_daily_allowance.sql
 ```
 
 Run the API server with:
@@ -105,7 +107,6 @@ Optional configuration variables and their defaults:
 PORT=5000
 SOMNIA_RPC_URL=https://dream-rpc.somnia.network
 INITIAL_GAS_SPONSOR_AMOUNT=0.1
-INITIAL_TUSDC_FAUCET_AMOUNT=20
 EXPLORER_TX_BASE_URL=https://shannon-explorer.somnia.network/tx
 ```
 
