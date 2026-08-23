@@ -166,7 +166,6 @@ export function evaluateRisk(input: RiskInput): RiskResult {
     };
   }
 
-  // Prefer explicit rejection of invalid stored prefs over silent repair.
   const prefsCheck = validateUserSettings(settings, system);
   if (!prefsCheck.ok) {
     return { ok: false, code: prefsCheck.code, reason: prefsCheck.reason };
@@ -217,20 +216,20 @@ export function evaluateRisk(input: RiskInput): RiskResult {
     };
   }
 
-  // Daily loss stop: realized PnL ≤ -user.maxDailyLoss (and user limit ≤ system).
+  // System ceiling first, then user stop (user limit is always ≤ system).
+  if (settings.realizedPnlToday <= -system.maxDailyLoss) {
+    return {
+      ok: false,
+      code: "system_daily_loss_stop",
+      reason: `System daily loss ceiling reached (pnl=${settings.realizedPnlToday}, SYSTEM_MAX_DAILY_LOSS_TUSDC=${system.maxDailyLoss}). Resets next UTC day.`,
+    };
+  }
+
   if (settings.realizedPnlToday <= -settings.maxDailyLoss) {
     return {
       ok: false,
       code: "user_daily_loss_stop",
       reason: `Daily loss stop reached (pnl=${settings.realizedPnlToday}, limit=${settings.maxDailyLoss}). Resets next UTC day.`,
-    };
-  }
-
-  if (settings.realizedPnlToday <= -system.maxDailyLoss) {
-    return {
-      ok: false,
-      code: "system_daily_loss_stop",
-      reason: `System daily loss ceiling reached (pnl=${settings.realizedPnlToday}, SYSTEM_MAX_DAILY_LOSS_TUSDC=${system.maxDailyLoss}).`,
     };
   }
 
