@@ -12,6 +12,7 @@ engine is still being built.
 - Express 5 for the backend HTTP server
 - Supabase for server-side persistence
 - viem for EVM wallet and blockchain operations
+- `@somnia-chain/markets-sdk` for Event Contract market data
 - Zod for runtime configuration validation
 - esbuild for production builds
 
@@ -81,6 +82,30 @@ This endpoint performs no approvals, orders, minting, merging, redemption,
 funding, or database writes. It is intentionally separate from Telegram
 handlers and wallet/funding code.
 
+## Stage 2 strategy decisions (no execution)
+
+```text
+GET /api/dreamdex/decisions
+GET /api/dreamdex/decisions?asset=BTC
+GET /api/dreamdex/decisions?asset=ETH
+```
+
+Pure strategy layer (`edge-taker-v1`) consumes Stage 1 market snapshots and
+emits structured `enter` / `skip` decisions for BTC and ETH Event Contracts.
+
+Default rules:
+
+- Fair probability `0.5`; edge threshold `0.08`
+- Enter **YES** when best YES ask ≤ `0.42`
+- Enter **NO** when best NO ask ≤ `0.42`, or YES ask ≥ `0.58`
+- Skip: unsupported asset, finalized, not tradable, expired, &lt; 5 minutes to
+  expiry, empty asks, YES spread &gt; `0.10`, or no edge
+
+No private keys, approvals, or orders. Future Stage 3 execution can consume the
+decision objects (`marketId`, direction, `limitPriceHint`, edge, book tops).
+
+Unit tests: `pnpm --filter @workspace/api-server run test`
+
 ## Setup
 
 Install dependencies with pnpm, then apply the Supabase migrations manually in
@@ -104,6 +129,7 @@ builds:
 ```bash
 pnpm run typecheck
 pnpm run build
+pnpm --filter @workspace/api-server run test
 ```
 
 ## Required environment variables
@@ -127,6 +153,8 @@ Optional configuration variables and their defaults:
 ```text
 PORT=5000
 SOMNIA_RPC_URL=https://dream-rpc.somnia.network
+DREAMDEX_INDEXER_URL=https://dev.smk.somnia.host/v1/graphql
+SOMNIA_WS_RPC_URL=wss://api.infra.testnet.somnia.network/ws
 INITIAL_GAS_SPONSOR_AMOUNT=0.1
 EXPLORER_TX_BASE_URL=https://shannon-explorer.somnia.network/tx
 ```
@@ -137,9 +165,10 @@ the backend and must not be exposed to clients.
 
 ## Roadmap
 
-- Add Somnia/DreamDEX Event Contract market discovery.
-- Add rule-based Up/Down trading and order execution.
-- Add trade status, settlement, and redemption handling.
-- Add user-facing trade history and performance reporting.
+- [x] Stage 0 — wallet onboarding, STT sponsor, durable tUSDC faucet
+- [x] Stage 1 — Event Contract market discovery and order books
+- [x] Stage 2 — rule-based strategy decisions (this layer)
+- [ ] Stage 3 — order execution, fills, settlement, redemption
+- [ ] User-facing trade history and performance reporting
 
 Trading and order execution are not currently enabled.
