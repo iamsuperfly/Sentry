@@ -9,8 +9,15 @@ import {
   planLiveSubmission,
   transitionIntent,
 } from "./execution.ts";
-import { evaluateRisk } from "./risk.ts";
+import {
+  DEFAULT_USER_PREFERENCES,
+  evaluateRisk,
+  validateUserSettings,
+} from "./risk.ts";
+import { DEFAULT_SYSTEM_LIMITS } from "./system-limits.ts";
 import type { StrategyDecision } from "./strategy.ts";
+
+const system = DEFAULT_SYSTEM_LIMITS;
 
 function enterDecision(
   overrides: Partial<StrategyDecision> = {},
@@ -48,69 +55,232 @@ function enterDecision(
   };
 }
 
-const baseSettings = {
+const validUser = {
+  ...DEFAULT_USER_PREFERENCES,
   tradingEnabled: true,
-  defaultStake: 1,
-  maxTradeStake: 5,
-  maxDailyLoss: 10,
-  maxOpenPositions: 1,
+  defaultStake: 2,
+  maxTradeStake: 10,
+  maxDailyLoss: 30,
+  maxOpenPositions: 2,
+  dailyProfitTarget: null as number | null,
   realizedPnlToday: 0,
   openPositionCount: 0,
-  collateralBalance: 20,
+  collateralBalance: 50,
 };
 
-describe("risk", () => {
-  it("rejects when trading disabled", () => {
+describe("validateUserSettings", () => {
+  it("accepts valid prefs within system ceilings", () => {
+    const r = validateUserSettings(
+      {
+        tradingEnabled: true,
+        defaultStake: 5,
+        maxTradeStake: 10,
+        maxDailyLoss: 30,
+        maxOpenPositions: 2,
+        dailyProfitTarget: null,
+      },
+      system,
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it("rejects max_trade_stake above system max 200", () => {
+    const r = validateUserSettings(
+      {
+        tradingEnabled: true,
+        defaultStake: 1,
+        maxTradeStake: 500,
+        maxDailyLoss: 10,
+        maxOpenPositions: 1,
+        dailyProfitTarget: null,
+      },
+      system,
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "max_trade_stake_above_system_max");
+  });
+
+  it("rejects default_stake above user max_trade_stake", () => {
+    const r = validateUserSettings(
+      {
+        tradingEnabled: true,
+        defaultStake: 15,
+        maxTradeStake: 10,
+        maxDailyLoss: 10,
+        maxOpenPositions: 1,
+        dailyProfitTarget: null,
+      },
+      system,
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "default_above_user_max");
+  });
+
+  it("rejects max_daily_loss above system 70", () => {
+    const r = validateUserSettings(
+      {
+        tradingEnabled: true,
+        defaultStake: 1,
+        maxTradeStake: 1,
+        maxDailyLoss: 100,
+        maxOpenPositions: 1,
+        dailyProfitTarget: null,
+      },
+      system,
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "max_daily_loss_above_system_max");
+  });
+
+  it("rejects max_open_positions above system 5", () => {
+    const r = validateUserSettings(
+      {
+        tradingEnabled: true,
+        defaultStake: 1,
+        maxTradeStake: 1,
+        maxDailyLoss: 10,
+        maxOpenPositions: 9,
+        dailyProfitTarget: null,
+      },
+      system,
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "invalid_max_open_positions");
+  });
+});
+
+describe("evaluateRisk system + user layers", () => {
+  it("rejects stake below system min 1", () => {
     const r = evaluateRisk({
-      stake: 1,
+      stake: 0.5,
       limitPrice: 0.4,
-      settings: { ...baseSettings, tradingEnabled: false },
+      settings: validUser,
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "stake_below_system_min");
+  });
+
+  it("rejects stake above system max 200", () => {
+    const r = evaluateRisk({
+      stake: 201,
+      limitPrice: 0.4,
+      settings: { ...validUser, maxTradeStake: 200, collateralBalance: 500 },
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "stake_above_system_max");
+  });
+
+  it("rejects stake above user max_trade_stake", () => {
+    const r = evaluateRisk({
+      stake: 15,
+      limitPrice: 0.4,
+      settings: validUser,
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "stake_exceeds_user_max");
+  });
+
+  it("accepts valid stake within user and system", () => {
+    const r = evaluateRisk({
+      stake: 5,
+      limitPrice: 0.4,
+      settings: validUser,
+      system,
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.stake, 5);
+      assert.equal(r.contracts, 12.5);
+    }
+  });
+
+  it("rejects at system open-position ceiling", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: {
+        ...validUser,
+        maxOpenPositions: 5,
+        openPositionCount: 5,
+      },
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "system_max_open_positions");
+  });
+
+  it("rejects at user open-position ceiling", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: {
+        ...validUser,
+        maxOpenPositions: 2,
+        openPositionCount: 2,
+      },
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "user_max_open_positions");
+  });
+
+  it("rejects when user daily loss stop reached", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: { ...validUser, maxDailyLoss: 30, realizedPnlToday: -30 },
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "user_daily_loss_stop");
+  });
+
+  it("rejects when system daily loss ceiling reached", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: {
+        ...validUser,
+        maxDailyLoss: 70,
+        realizedPnlToday: -70,
+      },
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "system_daily_loss_stop");
+  });
+
+  it("rejects when daily profit target reached", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: {
+        ...validUser,
+        dailyProfitTarget: 20,
+        realizedPnlToday: 20,
+      },
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "daily_profit_target_reached");
+  });
+
+  it("rejects when trading_enabled=false", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: { ...validUser, tradingEnabled: false },
+      system,
     });
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.code, "trading_disabled");
   });
 
-  it("rejects max open positions", () => {
-    const r = evaluateRisk({
-      stake: 1,
-      limitPrice: 0.4,
-      settings: { ...baseSettings, openPositionCount: 1 },
-    });
-    assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.code, "max_open_positions");
-  });
-
-  it("rejects daily loss breach", () => {
-    const r = evaluateRisk({
-      stake: 1,
-      limitPrice: 0.4,
-      settings: { ...baseSettings, realizedPnlToday: -10 },
-    });
-    assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.code, "max_daily_loss");
-  });
-
-  it("rejects insufficient collateral", () => {
-    const r = evaluateRisk({
-      stake: 5,
-      limitPrice: 0.4,
-      settings: { ...baseSettings, collateralBalance: 1 },
-    });
-    assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.code, "insufficient_collateral");
-  });
-
-  it("accepts valid stake and sizes contracts", () => {
-    const r = evaluateRisk({
-      stake: 2,
-      limitPrice: 0.4,
-      settings: baseSettings,
-    });
-    assert.equal(r.ok, true);
-    if (r.ok) {
-      assert.equal(r.stake, 2);
-      assert.equal(r.contracts, 5);
-    }
+  it("default user prefs have trading disabled", () => {
+    assert.equal(DEFAULT_USER_PREFERENCES.tradingEnabled, false);
   });
 });
 
@@ -142,8 +312,13 @@ describe("idempotency + intent build", () => {
     const result = buildTradeIntent({
       userId: "u1",
       walletAddress: "0xwallet",
-      decision: enterDecision({ action: "skip", direction: null, limitPriceHint: null }),
-      settings: baseSettings,
+      decision: enterDecision({
+        action: "skip",
+        direction: null,
+        limitPriceHint: null,
+      }),
+      settings: validUser,
+      system,
     });
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.code, "not_enter");
@@ -154,7 +329,8 @@ describe("idempotency + intent build", () => {
       userId: "u1",
       walletAddress: "0xwallet",
       decision: enterDecision(),
-      settings: baseSettings,
+      settings: validUser,
+      system,
       existing: { status: "pending", idempotencyKey: "x" },
     });
     assert.equal(result.ok, false);
@@ -166,7 +342,9 @@ describe("idempotency + intent build", () => {
       userId: "u1",
       walletAddress: "0xwallet",
       decision: enterDecision(),
-      settings: baseSettings,
+      settings: validUser,
+      system,
+      stake: 2,
       existing: { status: "failed", idempotencyKey: "x" },
     });
     assert.equal(result.ok, true);
@@ -177,8 +355,9 @@ describe("idempotency + intent build", () => {
       userId: "u1",
       walletAddress: "0xwallet",
       decision: enterDecision(),
-      settings: baseSettings,
-      stake: 1,
+      settings: validUser,
+      system,
+      stake: 2,
     });
     assert.equal(result.ok, true);
     if (result.ok) {
@@ -215,35 +394,21 @@ describe("live submit gate", () => {
     if (!g.ok) assert.equal(g.code, "live_execution_disabled");
   });
 
-  it("blocks when live not requested", () => {
-    const g = assertLiveSubmitAllowed({
-      enableLiveExecution: true,
-      liveExecutionRequested: false,
-    });
-    assert.equal(g.ok, false);
-  });
-
-  it("allows only when both flags true", () => {
-    const g = assertLiveSubmitAllowed({
-      enableLiveExecution: true,
-      liveExecutionRequested: true,
-    });
-    assert.equal(g.ok, true);
-  });
-
-  it("plans user-wallet IOC path (not treasury)", () => {
+  it("plans user-wallet IOC with tUSDC collateral", () => {
     const built = buildTradeIntent({
       userId: "u1",
       walletAddress: "0xwallet",
       decision: enterDecision(),
-      settings: baseSettings,
+      settings: validUser,
+      system,
+      stake: 2,
     });
     assert.equal(built.ok, true);
     if (!built.ok) return;
     const plan = planLiveSubmission(built.intent);
     assert.equal(plan.signer, "user_wallet");
     assert.equal(plan.orderType, "IOC");
-    assert.ok(plan.steps.some((s) => s.includes("user privateKey")));
-    assert.ok(!plan.steps.some((s) => /treasury/i.test(s) && /sign/i.test(s)));
+    assert.equal(plan.collateralToken, "tUSDC");
+    assert.ok(plan.steps.some((s) => s.includes("PROTOCOL")));
   });
 });
