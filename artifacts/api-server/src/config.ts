@@ -26,6 +26,11 @@ const envSchema = z.object({
     .default("https://shannon-explorer.somnia.network/tx"),
   TREASURY_PRIVATE_KEY: z.string().min(1, "TREASURY_PRIVATE_KEY is required"),
   WALLET_ENCRYPTION_KEY: z.string().min(1, "WALLET_ENCRYPTION_KEY is required"),
+  /** When false (default), Stage 3 only builds intents — no chain orders. */
+  ENABLE_LIVE_EXECUTION: z
+    .string()
+    .optional()
+    .transform((v) => v === "true" || v === "1"),
 });
 
 export type AppConfig = {
@@ -40,6 +45,7 @@ export type AppConfig = {
   explorerTxBaseUrl: string;
   treasuryPrivateKey: string;
   walletEncryptionKey: string;
+  enableLiveExecution: boolean;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -71,5 +77,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     explorerTxBaseUrl: parsed.data.EXPLORER_TX_BASE_URL,
     treasuryPrivateKey: parsed.data.TREASURY_PRIVATE_KEY,
     walletEncryptionKey: parsed.data.WALLET_ENCRYPTION_KEY,
+    enableLiveExecution: parsed.data.ENABLE_LIVE_EXECUTION ?? false,
   };
 }

@@ -1,0 +1,246 @@
+import type { StrategyDecision } from "./strategy";
+import { evaluateRisk, type UserRiskSettings } from "./risk";
+
+/** Stage 3 execution layer — intents + state machine. Live chain submit is gated. */
+
+export const EXECUTION_MODULE = "stage-3-execution";
+
+export type DbDirection = "up" | "down";
+
+export type IntentStatus =
+  | "pending"
+  | "submitted"
+  | "partially_filled"
+  | "filled"
+  | "cancelled"
+  | "settled"
+  | "redeemed"
+  | "failed";
+
+export type TradeIntent = {
+  idempotencyKey: string;
+  userId: string;
+  walletAddress: string;
+  marketId: string;
+  symbol: string;
+  direction: DbDirection;
+  side: "buy";
+  strategyName: string;
+  strategyVersion: string;
+  stake: number;
+  contracts: number;
+  limitPrice: number;
+  poolAddress: string;
+  status: IntentStatus;
+  decision: StrategyDecision;
+  rejectReason: string | null;
+};
+
+export type IntentBuildResult =
+  | { ok: true; intent: TradeIntent }
+  | { ok: false; code: string; reason: string; idempotencyKey: string };
+
+export function mapDirection(direction: "YES" | "NO"): DbDirection {
+  return direction === "YES" ? "up" : "down";
+}
+
+export function buildIdempotencyKey(input: {
+  userId: string;
+  marketId: string;
+  strategyName: string;
+  strategyVersion: string;
+  direction: "YES" | "NO";
+}): string {
+  return [
+    input.userId,
+    input.marketId,
+    input.strategyName,
+    input.strategyVersion,
+    input.direction,
+  ].join(":");
+}
+
+/**
+ * Convert a Stage 2 enter decision into a trade intent after risk checks.
+ * Does not touch the chain or database — pure.
+ */
+export function buildTradeIntent(input: {
+  userId: string;
+  walletAddress: string;
+  decision: StrategyDecision;
+  settings: UserRiskSettings;
+  stake?: number;
+  /** Existing row with same idempotency key (if any). */
+  existing?: { status: IntentStatus; idempotencyKey: string } | null;
+}): IntentBuildResult {
+  const { decision } = input;
+  const idempotencyKey = buildIdempotencyKey({
+    userId: input.userId,
+    marketId: decision.marketId,
+    strategyName: decision.strategyName,
+    strategyVersion: decision.strategyVersion,
+    direction: decision.direction ?? "YES",
+  });
+
+  if (decision.action !== "enter" || !decision.direction || decision.limitPriceHint == null) {
+    return {
+      ok: false,
+      code: "not_enter",
+      reason: "Only Stage 2 enter decisions with direction and limitPriceHint can become intents.",
+      idempotencyKey,
+    };
+  }
+
+  if (input.existing) {
+    const terminal = ["failed", "cancelled", "redeemed"].includes(
+      input.existing.status,
+    );
+    if (!terminal) {
+      return {
+        ok: false,
+        code: "duplicate_intent",
+        reason: `Active intent already exists with status ${input.existing.status}.`,
+        idempotencyKey,
+      };
+    }
+  }
+
+  const risk = evaluateRisk({
+    stake: input.stake ?? input.settings.defaultStake,
+    limitPrice: decision.limitPriceHint,
+    settings: input.settings,
+  });
+
+  if (!risk.ok) {
+    return {
+      ok: false,
+      code: risk.code,
+      reason: risk.reason,
+      idempotencyKey,
+    };
+  }
+
+  const symbol = `${decision.asset}-${decision.marketId.slice(0, 10)}/${decision.direction}`;
+
+  return {
+    ok: true,
+    intent: {
+      idempotencyKey,
+      userId: input.userId,
+      walletAddress: input.walletAddress,
+      marketId: decision.marketId,
+      symbol,
+      direction: mapDirection(decision.direction),
+      side: "buy",
+      strategyName: decision.strategyName,
+      strategyVersion: decision.strategyVersion,
+      stake: risk.stake,
+      contracts: risk.contracts,
+      limitPrice: decision.limitPriceHint,
+      poolAddress: decision.poolAddress,
+      status: "pending",
+      decision,
+      rejectReason: null,
+    },
+  };
+}
+
+/** Allowed status transitions for execution tracking. */
+const TRANSITIONS: Record<IntentStatus, IntentStatus[]> = {
+  pending: ["submitted", "failed", "cancelled"],
+  submitted: ["partially_filled", "filled", "failed", "cancelled"],
+  partially_filled: ["filled", "cancelled", "failed"],
+  filled: ["settled", "failed"],
+  cancelled: [],
+  settled: ["redeemed"],
+  redeemed: [],
+  failed: [],
+};
+
+export function canTransition(
+  from: IntentStatus,
+  to: IntentStatus,
+): boolean {
+  return TRANSITIONS[from]?.includes(to) ?? false;
+}
+
+export function transitionIntent(
+  status: IntentStatus,
+  next: IntentStatus,
+): { ok: true; status: IntentStatus } | { ok: false; reason: string } {
+  if (!canTransition(status, next)) {
+    return {
+      ok: false,
+      reason: `Illegal transition ${status} → ${next}.`,
+    };
+  }
+  return { ok: true, status: next };
+}
+
+/**
+ * Live on-chain submit is intentionally not invoked unless the caller passes
+ * liveExecution=true AND config.enableLiveExecution is true.
+ *
+ * Signing uses the *user* wallet private key (AES-GCM decrypted in memory),
+ * never the treasury key. Treasury remains STT gas sponsorship only.
+ */
+export type LiveSubmitGate = {
+  enableLiveExecution: boolean;
+  liveExecutionRequested: boolean;
+};
+
+export function assertLiveSubmitAllowed(
+  gate: LiveSubmitGate,
+): { ok: true } | { ok: false; code: string; reason: string } {
+  if (!gate.enableLiveExecution) {
+    return {
+      ok: false,
+      code: "live_execution_disabled",
+      reason:
+        "ENABLE_LIVE_EXECUTION is false. Intents may be recorded; chain submit is blocked.",
+    };
+  }
+  if (!gate.liveExecutionRequested) {
+    return {
+      ok: false,
+      code: "live_not_requested",
+      reason: "Caller did not request liveExecution=true.",
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Documents the on-chain steps Stage 3 will perform when live submit is enabled.
+ * Kept as data (not executed here) so tests and operators can inspect the plan.
+ */
+export function planLiveSubmission(intent: TradeIntent): {
+  steps: string[];
+  signer: "user_wallet";
+  orderType: "IOC";
+  side: "buy";
+  direction: DbDirection;
+  marketId: string;
+  poolAddress: string;
+  limitPrice: number;
+  contracts: number;
+} {
+  return {
+    steps: [
+      "Decrypt user encrypted_private_key in memory (WALLET_ENCRYPTION_KEY).",
+      "Construct SomniaMarkets with user privateKey (never treasury).",
+      "Re-read getMarketOnchain(marketId); abort if status !== Trading.",
+      "Ensure ERC-20 allowance of collateral to current pool (approve if needed).",
+      "Place IOC buy on YES or NO outcome at limitPriceHint for computed contracts.",
+      "Persist transaction hash / fill size; transition pending → submitted → filled|failed.",
+    ],
+    signer: "user_wallet",
+    orderType: "IOC",
+    side: "buy",
+    direction: intent.direction,
+    marketId: intent.marketId,
+    poolAddress: intent.poolAddress,
+    limitPrice: intent.limitPrice,
+    contracts: intent.contracts,
+  };
+}
