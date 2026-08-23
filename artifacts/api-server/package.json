@@ -7,7 +7,8 @@
     "build": "node ./build.mjs",
     "dev": "export NODE_ENV=development && pnpm run build && pnpm run start",
     "start": "node --enable-source-maps ./dist/index.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test src/lib/strategy.test.ts"
   },
   "dependencies": {
     "@somnia-chain/markets-sdk": "0.28.1",
