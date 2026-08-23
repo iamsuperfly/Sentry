@@ -147,6 +147,48 @@ describe("validateUserSettings", () => {
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.code, "invalid_max_open_positions");
   });
+
+  it("accepts the system minimum stake and maximum user stake", () => {
+    const r = validateUserSettings(
+      {
+        tradingEnabled: false,
+        defaultStake: 1,
+        maxTradeStake: 200,
+        maxDailyLoss: 70,
+        maxOpenPositions: 5,
+        dailyProfitTarget: 25,
+      },
+      system,
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it("rejects a default stake below 1", () => {
+    const r = validateUserSettings(
+      {
+        ...DEFAULT_USER_PREFERENCES,
+        defaultStake: 0.99,
+      },
+      system,
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "default_stake_below_system_min");
+  });
+
+  it("accepts a null profit target and rejects a non-positive target", () => {
+    const disabled = validateUserSettings(
+      { ...DEFAULT_USER_PREFERENCES, dailyProfitTarget: null },
+      system,
+    );
+    assert.equal(disabled.ok, true);
+
+    const invalid = validateUserSettings(
+      { ...DEFAULT_USER_PREFERENCES, dailyProfitTarget: 0 },
+      system,
+    );
+    assert.equal(invalid.ok, false);
+    if (!invalid.ok) assert.equal(invalid.code, "invalid_daily_profit_target");
+  });
 });
 
 describe("evaluateRisk system + user layers", () => {
