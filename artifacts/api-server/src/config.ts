@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+  resolveSystemLimits,
+  type SystemRiskLimits,
+} from "./lib/system-limits";
 
 const envSchema = z.object({
   PORT: z
@@ -31,6 +35,10 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === "true" || v === "1"),
+  SYSTEM_MIN_STAKE_TUSDC: z.string().optional(),
+  SYSTEM_MAX_STAKE_TUSDC: z.string().optional(),
+  SYSTEM_MAX_OPEN_POSITIONS: z.string().optional(),
+  SYSTEM_MAX_DAILY_LOSS_TUSDC: z.string().optional(),
 });
 
 export type AppConfig = {
@@ -46,6 +54,7 @@ export type AppConfig = {
   treasuryPrivateKey: string;
   walletEncryptionKey: string;
   enableLiveExecution: boolean;
+  systemLimits: SystemRiskLimits;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -78,5 +87,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     treasuryPrivateKey: parsed.data.TREASURY_PRIVATE_KEY,
     walletEncryptionKey: parsed.data.WALLET_ENCRYPTION_KEY,
     enableLiveExecution: parsed.data.ENABLE_LIVE_EXECUTION ?? false,
+    systemLimits: resolveSystemLimits({
+      SYSTEM_MIN_STAKE_TUSDC: parsed.data.SYSTEM_MIN_STAKE_TUSDC,
+      SYSTEM_MAX_STAKE_TUSDC: parsed.data.SYSTEM_MAX_STAKE_TUSDC,
+      SYSTEM_MAX_OPEN_POSITIONS: parsed.data.SYSTEM_MAX_OPEN_POSITIONS,
+      SYSTEM_MAX_DAILY_LOSS_TUSDC: parsed.data.SYSTEM_MAX_DAILY_LOSS_TUSDC,
+    }),
   };
 }

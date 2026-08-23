@@ -7,6 +7,10 @@ import {
   planLiveSubmission,
   type IntentStatus,
 } from "../lib/execution";
+import {
+  DEFAULT_USER_PREFERENCES,
+  validateUserSettings,
+} from "../lib/risk";
 import { evaluateMarkets, type StrategyDecision } from "../lib/strategy";
 
 export function createDreamdexRouter(config: AppConfig): IRouter {
@@ -75,8 +79,7 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
 
   /**
    * Stage 3 dry-run: build a trade intent from a Stage 2 decision body.
-   * Does not sign or broadcast. Does not write Supabase in this handler yet
-   * (persistence wires in when the bot path is enabled).
+   * Applies system ceilings + user prefs. Does not sign or broadcast.
    */
   router.post("/dreamdex/intents/preview", async (req, res): Promise<void> => {
     const body = req.body as {
@@ -90,6 +93,7 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
         maxTradeStake?: number;
         maxDailyLoss?: number;
         maxOpenPositions?: number;
+        dailyProfitTarget?: number | null;
         realizedPnlToday?: number;
         openPositionCount?: number;
         collateralBalance?: number;
@@ -106,11 +110,21 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
     }
 
     const settings = {
-      tradingEnabled: body.settings?.tradingEnabled ?? false,
-      defaultStake: body.settings?.defaultStake ?? 1,
-      maxTradeStake: body.settings?.maxTradeStake ?? 1,
-      maxDailyLoss: body.settings?.maxDailyLoss ?? 10,
-      maxOpenPositions: body.settings?.maxOpenPositions ?? 1,
+      tradingEnabled:
+        body.settings?.tradingEnabled ?? DEFAULT_USER_PREFERENCES.tradingEnabled,
+      defaultStake:
+        body.settings?.defaultStake ?? DEFAULT_USER_PREFERENCES.defaultStake,
+      maxTradeStake:
+        body.settings?.maxTradeStake ?? DEFAULT_USER_PREFERENCES.maxTradeStake,
+      maxDailyLoss:
+        body.settings?.maxDailyLoss ?? DEFAULT_USER_PREFERENCES.maxDailyLoss,
+      maxOpenPositions:
+        body.settings?.maxOpenPositions ??
+        DEFAULT_USER_PREFERENCES.maxOpenPositions,
+      dailyProfitTarget:
+        body.settings?.dailyProfitTarget === undefined
+          ? DEFAULT_USER_PREFERENCES.dailyProfitTarget
+          : body.settings.dailyProfitTarget,
       realizedPnlToday: body.settings?.realizedPnlToday ?? 0,
       openPositionCount: body.settings?.openPositionCount ?? 0,
       collateralBalance: body.settings?.collateralBalance ?? 0,
@@ -121,6 +135,7 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
       walletAddress: body.walletAddress,
       decision: body.decision,
       settings,
+      system: config.systemLimits,
       stake: body.stake,
       existing: body.existingStatus
         ? { status: body.existingStatus, idempotencyKey: "existing" }
@@ -134,6 +149,7 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
         code: built.code,
         reason: built.reason,
         idempotencyKey: built.idempotencyKey,
+        systemLimits: config.systemLimits,
         liveExecutionEnabled: config.enableLiveExecution,
       });
       return;
@@ -148,11 +164,57 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
       mode: "execution_preview",
       ok: true,
       intent: built.intent,
+      systemLimits: config.systemLimits,
       submissionPlan: planLiveSubmission(built.intent),
       liveSubmit: liveGate.ok
         ? { allowed: true }
         : { allowed: false, code: liveGate.code, reason: liveGate.reason },
-      note: "Per-user wallet signing exists (encrypted keys). Chain submit remains gated by ENABLE_LIVE_EXECUTION.",
+      note: "Shannon collateral is tUSDC. Protocol tick/lot checks run only on live submit. ENABLE_LIVE_EXECUTION remains the chain gate.",
+    });
+  });
+
+  /** Validate user risk preferences against system ceilings (no trade). */
+  router.post("/dreamdex/settings/validate", async (req, res): Promise<void> => {
+    const body = req.body as {
+      tradingEnabled?: boolean;
+      defaultStake?: number;
+      maxTradeStake?: number;
+      maxDailyLoss?: number;
+      maxOpenPositions?: number;
+      dailyProfitTarget?: number | null;
+    };
+
+    const result = validateUserSettings(
+      {
+        tradingEnabled: body.tradingEnabled ?? false,
+        defaultStake: body.defaultStake ?? DEFAULT_USER_PREFERENCES.defaultStake,
+        maxTradeStake:
+          body.maxTradeStake ?? DEFAULT_USER_PREFERENCES.maxTradeStake,
+        maxDailyLoss: body.maxDailyLoss ?? DEFAULT_USER_PREFERENCES.maxDailyLoss,
+        maxOpenPositions:
+          body.maxOpenPositions ?? DEFAULT_USER_PREFERENCES.maxOpenPositions,
+        dailyProfitTarget:
+          body.dailyProfitTarget === undefined
+            ? null
+            : body.dailyProfitTarget,
+      },
+      config.systemLimits,
+    );
+
+    if (!result.ok) {
+      res.status(400).json({
+        ok: false,
+        code: result.code,
+        reason: result.reason,
+        systemLimits: config.systemLimits,
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      settings: result.settings,
+      systemLimits: config.systemLimits,
     });
   });
 
