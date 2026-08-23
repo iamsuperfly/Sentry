@@ -11,6 +11,14 @@ const envSchema = z.object({
     .string()
     .min(1, "SUPABASE_SERVICE_ROLE_KEY is required"),
   SOMNIA_RPC_URL: z.string().url().default("https://dream-rpc.somnia.network"),
+  DREAMDEX_INDEXER_URL: z
+    .string()
+    .url()
+    .default("https://dev.smk.somnia.host/v1/graphql"),
+  SOMNIA_WS_RPC_URL: z
+    .string()
+    .url()
+    .default("wss://api.infra.testnet.somnia.network/ws"),
   INITIAL_GAS_SPONSOR_AMOUNT: z.string().default("0.1"),
   EXPLORER_TX_BASE_URL: z
     .string()
@@ -26,6 +34,8 @@ export type AppConfig = {
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
   rpcUrl: string;
+  dreamdexIndexerUrl: string;
+  wsRpcUrl: string;
   initialGasSponsorAmount: string;
   explorerTxBaseUrl: string;
   treasuryPrivateKey: string;
@@ -55,6 +65,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     supabaseUrl: parsed.data.SUPABASE_URL,
     supabaseServiceRoleKey: parsed.data.SUPABASE_SERVICE_ROLE_KEY,
     rpcUrl: parsed.data.SOMNIA_RPC_URL,
+    dreamdexIndexerUrl: parsed.data.DREAMDEX_INDEXER_URL,
+    wsRpcUrl: parsed.data.SOMNIA_WS_RPC_URL,
     initialGasSponsorAmount: parsed.data.INITIAL_GAS_SPONSOR_AMOUNT,
     explorerTxBaseUrl: parsed.data.EXPLORER_TX_BASE_URL,
     treasuryPrivateKey: parsed.data.TREASURY_PRIVATE_KEY,
