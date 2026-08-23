@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { DreamdexMarketDiagnostic } from "./dreamdex";
+import type { DreamdexMarketDiagnostic } from "./dreamdex.ts";
 import {
   DEFAULT_EDGE_THRESHOLD,
   DEFAULT_MIN_SECONDS_TO_EXPIRY,
@@ -10,7 +10,7 @@ import {
   FAIR_PROBABILITY,
   secondsToExpiry,
   STRATEGY_NAME,
-} from "./strategy";
+} from "./strategy.ts";
 
 function market(
   overrides: Partial<DreamdexMarketDiagnostic> &
