@@ -13,7 +13,8 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { AppConfig } from "../config";
 import { decryptPrivateKey } from "./wallet-crypto";
 
-export const TUSDC_ADDRESS = "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E" as const;
+export const TUSDC_ADDRESS =
+  "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E" as const;
 const tusdcAbi = [
   {
     type: "function",
@@ -39,7 +40,11 @@ const chain = (config: AppConfig) => ({
 });
 
 const account = (privateKey: string) =>
-  privateKeyToAccount((privateKey.startsWith("0x") ? privateKey : `0x${privateKey}`) as `0x${string}`);
+  privateKeyToAccount(
+    (privateKey.startsWith("0x")
+      ? privateKey
+      : `0x${privateKey}`) as `0x${string}`,
+  );
 
 export function createWallet() {
   const privateKey = generatePrivateKey();
@@ -47,7 +52,10 @@ export function createWallet() {
 }
 
 function client(config: AppConfig) {
-  return createPublicClient({ chain: chain(config), transport: http(config.rpcUrl) });
+  return createPublicClient({
+    chain: chain(config),
+    transport: http(config.rpcUrl),
+  });
 }
 
 export async function balances(config: AppConfig, address: string) {
@@ -71,22 +79,39 @@ export async function sponsor(config: AppConfig, destination: string) {
   const publicClient = client(config);
   const amount = parseEther(config.initialGasSponsorAmount);
   const gasPrice = await publicClient.getGasPrice();
-  const gas = await publicClient.estimateGas({ account: treasury, to: destination, value: amount });
-  const treasuryBalance = await publicClient.getBalance({ address: treasury.address });
-  if (treasuryBalance < amount + gas * gasPrice) throw new Error("Treasury has insufficient STT.");
+  const gas = await publicClient.estimateGas({
+    account: treasury,
+    to: destination,
+    value: amount,
+  });
+  const treasuryBalance = await publicClient.getBalance({
+    address: treasury.address,
+  });
+  if (treasuryBalance < amount + gas * gasPrice)
+    throw new Error("Treasury has insufficient STT.");
   const walletClient = createWalletClient({
     account: treasury,
     chain: chain(config),
     transport: http(config.rpcUrl),
   });
-  const hash = await walletClient.sendTransaction({ account: treasury, to: destination, value: amount });
+  const hash = await walletClient.sendTransaction({
+    account: treasury,
+    to: destination,
+    value: amount,
+  });
   return { hash, from: treasury.address };
 }
 
-export async function faucet(config: AppConfig, encryptedPrivateKey: string) {
-  const amount = parseUnits(config.initialTusdcFaucetAmount, 6);
-  if (amount <= 0n || amount > parseUnits("10000", 6)) {
-    throw new Error("Faucet amount must be greater than zero and no more than 10,000 tUSDC.");
+export async function faucet(
+  config: AppConfig,
+  encryptedPrivateKey: string,
+  amountText: string,
+) {
+  const amount = parseUnits(amountText, 6);
+  if (amount <= 0n || amount > parseUnits("500", 6)) {
+    throw new Error(
+      "Faucet amount must be greater than zero and no more than 500 tUSDC.",
+    );
   }
   const user = account(decryptPrivateKey(config, encryptedPrivateKey));
   const publicClient = client(config);
@@ -98,10 +123,17 @@ export async function faucet(config: AppConfig, encryptedPrivateKey: string) {
     functionName: "faucet",
     args: [amount],
   });
-  if ((await publicClient.getBalance({ address: user.address })) < gas * gasPrice) {
+  if (
+    (await publicClient.getBalance({ address: user.address })) <
+    gas * gasPrice
+  ) {
     throw new Error("User wallet has insufficient STT.");
   }
-  const walletClient = createWalletClient({ account: user, chain: chain(config), transport: http(config.rpcUrl) });
+  const walletClient = createWalletClient({
+    account: user,
+    chain: chain(config),
+    transport: http(config.rpcUrl),
+  });
   const hash = await walletClient.writeContract({
     account: user,
     address: TUSDC_ADDRESS,
@@ -113,8 +145,14 @@ export async function faucet(config: AppConfig, encryptedPrivateKey: string) {
 }
 
 export async function receipt(config: AppConfig, hash: Hash) {
-  const result = await client(config).waitForTransactionReceipt({ hash, timeout: 120_000 });
-  return { status: result.status === "success" ? "confirmed" : "failed", blockNumber: Number(result.blockNumber) };
+  const result = await client(config).waitForTransactionReceipt({
+    hash,
+    timeout: 120_000,
+  });
+  return {
+    status: result.status === "success" ? "confirmed" : "failed",
+    blockNumber: Number(result.blockNumber),
+  };
 }
 
 export async function inspectReceipt(config: AppConfig, hash: Hash) {
