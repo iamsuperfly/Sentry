@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   assertLiveSubmitAllowed,
   buildIdempotencyKey,
+  buildReentryIdempotencyKey,
   buildTradeIntent,
   canTransition,
   mapDirection,
@@ -146,6 +147,48 @@ describe("validateUserSettings", () => {
     );
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.code, "invalid_max_open_positions");
+  });
+
+  it("accepts the system minimum stake and maximum user stake", () => {
+    const r = validateUserSettings(
+      {
+        tradingEnabled: false,
+        defaultStake: 1,
+        maxTradeStake: 200,
+        maxDailyLoss: 70,
+        maxOpenPositions: 5,
+        dailyProfitTarget: 25,
+      },
+      system,
+    );
+    assert.equal(r.ok, true);
+  });
+
+  it("rejects a default stake below 1", () => {
+    const r = validateUserSettings(
+      {
+        ...DEFAULT_USER_PREFERENCES,
+        defaultStake: 0.99,
+      },
+      system,
+    );
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "default_stake_below_system_min");
+  });
+
+  it("accepts a null profit target and rejects a non-positive target", () => {
+    const disabled = validateUserSettings(
+      { ...DEFAULT_USER_PREFERENCES, dailyProfitTarget: null },
+      system,
+    );
+    assert.equal(disabled.ok, true);
+
+    const invalid = validateUserSettings(
+      { ...DEFAULT_USER_PREFERENCES, dailyProfitTarget: 0 },
+      system,
+    );
+    assert.equal(invalid.ok, false);
+    if (!invalid.ok) assert.equal(invalid.code, "invalid_daily_profit_target");
   });
 });
 
@@ -308,6 +351,23 @@ describe("idempotency + intent build", () => {
     assert.equal(a, b);
   });
 
+  it("derives a stable new key for each terminal trade generation", () => {
+    const base = buildIdempotencyKey({
+      userId: "u1",
+      marketId: "0xabc",
+      strategyName: "edge-taker-v1",
+      strategyVersion: "1.0.0",
+      direction: "YES",
+    });
+    const firstReentry = buildReentryIdempotencyKey(base, "trade-1");
+    const retriedReentry = buildReentryIdempotencyKey(base, "trade-1");
+    const laterReentry = buildReentryIdempotencyKey(base, "trade-2");
+
+    assert.notEqual(firstReentry, base);
+    assert.equal(firstReentry, retriedReentry);
+    assert.notEqual(firstReentry, laterReentry);
+  });
+
   it("rejects skip decisions", () => {
     const result = buildTradeIntent({
       userId: "u1",
@@ -348,6 +408,25 @@ describe("idempotency + intent build", () => {
       existing: { status: "failed", idempotencyKey: "x" },
     });
     assert.equal(result.ok, true);
+  });
+
+  it("allows a new generation after every terminal status", () => {
+    for (const status of [
+      "cancelled",
+      "settled",
+      "redeemed",
+      "failed",
+    ] as const) {
+      const result = buildTradeIntent({
+        userId: "u1",
+        walletAddress: "0xwallet",
+        decision: enterDecision(),
+        settings: validUser,
+        system,
+        existing: { status, idempotencyKey: "prior" },
+      });
+      assert.equal(result.ok, true, status);
+    }
   });
 
   it("builds a pending intent for enter decisions", () => {
