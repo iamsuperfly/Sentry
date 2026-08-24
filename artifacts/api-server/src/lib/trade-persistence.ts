@@ -13,11 +13,13 @@ import {
   getSupabaseClient,
 } from "./supabase.ts";
 import {
+  buildReentryIdempotencyKey,
   buildTradeIntent,
   type TradeIntent,
 } from "./execution.ts";
 import {
   getUtcDayBounds,
+  isTerminalTradeStatus,
   OPEN_TRADE_STATUSES,
   sumRealizedPnl,
 } from "./trade-state.ts";
@@ -41,6 +43,17 @@ type SettingsRow = {
   max_daily_loss_usdso: string | number;
   max_open_positions: number;
   daily_profit_target_usdso: string | number | null;
+};
+
+type PersistedTradeRow = {
+  id: string;
+  user_id: string;
+  market_id: string;
+  strategy_name: string;
+  strategy_version: string;
+  direction: "up" | "down";
+  status: string;
+  [key: string]: unknown;
 };
 
 function numeric(value: string | number | null, field: string): number {
@@ -182,19 +195,41 @@ export async function getTradeByIdempotencyKey(
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
     .select("*")
-    .eq("user_id", userId)
     .eq("idempotency_key", idempotencyKey)
     .maybeSingle();
   if (error) throw new Error("Unable to read trade intent.");
-  return data;
+  if (!data) return null;
+  if ((data as PersistedTradeRow).user_id !== userId) {
+    throw new Error("Idempotency key already belongs to another user.");
+  }
+  return data as PersistedTradeRow;
 }
 
-export async function persistTradeIntent(
+async function getLatestTradeForIntent(
+  config: AppConfig,
+  intent: TradeIntent,
+): Promise<PersistedTradeRow | null> {
+  const { data, error } = await getSupabaseClient(config)
+    .from("trades")
+    .select("*")
+    .eq("user_id", intent.userId)
+    .eq("market_id", intent.marketId)
+    .eq("strategy_name", intent.strategyName)
+    .eq("strategy_version", intent.strategyVersion)
+    .eq("direction", intent.direction)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error("Unable to read prior trade intents.");
+  return data ? (data as PersistedTradeRow) : null;
+}
+
+async function insertTradeIntent(
   config: AppConfig,
   intent: TradeIntent,
 ) {
-  const client = getSupabaseClient(config);
-  const { data, error } = await client
+  return getSupabaseClient(config)
     .from("trades")
     .insert({
       user_id: intent.userId,
@@ -217,21 +252,48 @@ export async function persistTradeIntent(
     })
     .select("*")
     .single();
+}
 
-  if (!error && data) return data;
-  if (error?.code !== "23505") {
-    throw new Error("Unable to persist trade intent.");
-  }
+export async function persistTradeIntent(
+  config: AppConfig,
+  intent: TradeIntent,
+) {
+  let candidate = intent;
 
-  const existing = await getTradeByIdempotencyKey(
-    config,
-    intent.userId,
-    intent.idempotencyKey,
-  );
-  if (!existing) {
-    throw new Error("Idempotency key already belongs to another user.");
+  for (;;) {
+    const { data, error } = await insertTradeIntent(config, candidate);
+    if (!error && data) return data;
+    if (error?.code !== "23505") {
+      throw new Error("Unable to persist trade intent.");
+    }
+
+    const keyOwner = await getTradeByIdempotencyKey(
+      config,
+      intent.userId,
+      candidate.idempotencyKey,
+    );
+
+    const latest = await getLatestTradeForIntent(config, intent);
+    if (latest && !isTerminalTradeStatus(latest.status)) {
+      return latest;
+    }
+
+    const previousTerminalTrade = latest ?? keyOwner;
+    if (!previousTerminalTrade) {
+      throw new Error("Unable to resolve conflicting trade intent.");
+    }
+    if (!isTerminalTradeStatus(previousTerminalTrade.status)) {
+      return previousTerminalTrade;
+    }
+
+    candidate = {
+      ...intent,
+      idempotencyKey: buildReentryIdempotencyKey(
+        intent.idempotencyKey,
+        previousTerminalTrade.id,
+      ),
+    };
   }
-  return existing;
 }
 
 export async function createPersistedTradeIntent(input: {

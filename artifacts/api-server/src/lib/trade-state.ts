@@ -7,8 +7,19 @@ export const OPEN_TRADE_STATUSES = [
   "filled",
 ] as const satisfies ReadonlyArray<IntentStatus>;
 
+export const TERMINAL_TRADE_STATUSES = [
+  "cancelled",
+  "settled",
+  "redeemed",
+  "failed",
+] as const satisfies ReadonlyArray<IntentStatus>;
+
 export function isOpenTradeStatus(status: string): boolean {
   return (OPEN_TRADE_STATUSES as readonly string[]).includes(status);
+}
+
+export function isTerminalTradeStatus(status: string): boolean {
+  return (TERMINAL_TRADE_STATUSES as readonly string[]).includes(status);
 }
 
 export function getUtcDayBounds(now = new Date()): {

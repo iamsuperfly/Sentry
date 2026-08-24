@@ -7,6 +7,7 @@ import {
   DEFAULT_SYSTEM_LIMITS,
   type SystemRiskLimits,
 } from "./system-limits.ts";
+import { isTerminalTradeStatus } from "./trade-state.ts";
 
 /** Stage 3 execution layer — intents + state machine. Live chain submit is gated. */
 
@@ -68,6 +69,18 @@ export function buildIdempotencyKey(input: {
 }
 
 /**
+ * A terminal trade closes one idempotency generation. Deriving the next key
+ * from that persisted row keeps retries of the new generation idempotent
+ * without weakening the database's global unique-key protection.
+ */
+export function buildReentryIdempotencyKey(
+  baseKey: string,
+  previousTradeId: string,
+): string {
+  return `${baseKey}:reentry:${previousTradeId}`;
+}
+
+/**
  * Convert a Stage 2 enter decision into a trade intent after system+user risk.
  * Does not touch the chain or database — pure.
  * Protocol tick/lot/status checks remain for the live execution path.
@@ -106,10 +119,7 @@ export function buildTradeIntent(input: {
   }
 
   if (input.existing) {
-    const terminal = ["failed", "cancelled", "redeemed"].includes(
-      input.existing.status,
-    );
-    if (!terminal) {
+    if (!isTerminalTradeStatus(input.existing.status)) {
       return {
         ok: false,
         code: "duplicate_intent",

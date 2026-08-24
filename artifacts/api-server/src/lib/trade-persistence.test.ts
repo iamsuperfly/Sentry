@@ -3,8 +3,10 @@ import { describe, it } from "node:test";
 import {
   getUtcDayBounds,
   isOpenTradeStatus,
+  isTerminalTradeStatus,
   sumRealizedPnl,
 } from "./trade-state.ts";
+import { buildReentryIdempotencyKey } from "./execution.ts";
 
 describe("open position persistence rules", () => {
   it("counts only genuinely open or pending statuses", () => {
@@ -23,6 +25,30 @@ describe("open position persistence rules", () => {
     ]) {
       assert.equal(isOpenTradeStatus(status), false, status);
     }
+  });
+
+  it("recognizes terminal trades as closed generations", () => {
+    assert.equal(isTerminalTradeStatus("failed"), true);
+    assert.equal(isTerminalTradeStatus("settled"), true);
+    assert.equal(isTerminalTradeStatus("pending"), false);
+    assert.equal(isTerminalTradeStatus("filled"), false);
+  });
+
+  it("keeps duplicate retries on the same re-entry key", () => {
+    const base = "u1:market:strategy:1.0.0:YES";
+    const first = buildReentryIdempotencyKey(base, "terminal-trade-id");
+    const retry = buildReentryIdempotencyKey(base, "terminal-trade-id");
+
+    assert.equal(first, retry);
+    assert.notEqual(first, base);
+  });
+
+  it("uses a different key after a later terminal trade", () => {
+    const base = "u1:market:strategy:1.0.0:YES";
+    const first = buildReentryIdempotencyKey(base, "terminal-trade-1");
+    const second = buildReentryIdempotencyKey(base, "terminal-trade-2");
+
+    assert.notEqual(first, second);
   });
 });
 

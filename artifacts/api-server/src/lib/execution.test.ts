@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   assertLiveSubmitAllowed,
   buildIdempotencyKey,
+  buildReentryIdempotencyKey,
   buildTradeIntent,
   canTransition,
   mapDirection,
@@ -350,6 +351,23 @@ describe("idempotency + intent build", () => {
     assert.equal(a, b);
   });
 
+  it("derives a stable new key for each terminal trade generation", () => {
+    const base = buildIdempotencyKey({
+      userId: "u1",
+      marketId: "0xabc",
+      strategyName: "edge-taker-v1",
+      strategyVersion: "1.0.0",
+      direction: "YES",
+    });
+    const firstReentry = buildReentryIdempotencyKey(base, "trade-1");
+    const retriedReentry = buildReentryIdempotencyKey(base, "trade-1");
+    const laterReentry = buildReentryIdempotencyKey(base, "trade-2");
+
+    assert.notEqual(firstReentry, base);
+    assert.equal(firstReentry, retriedReentry);
+    assert.notEqual(firstReentry, laterReentry);
+  });
+
   it("rejects skip decisions", () => {
     const result = buildTradeIntent({
       userId: "u1",
@@ -390,6 +408,25 @@ describe("idempotency + intent build", () => {
       existing: { status: "failed", idempotencyKey: "x" },
     });
     assert.equal(result.ok, true);
+  });
+
+  it("allows a new generation after every terminal status", () => {
+    for (const status of [
+      "cancelled",
+      "settled",
+      "redeemed",
+      "failed",
+    ] as const) {
+      const result = buildTradeIntent({
+        userId: "u1",
+        walletAddress: "0xwallet",
+        decision: enterDecision(),
+        settings: validUser,
+        system,
+        existing: { status, idempotencyKey: "prior" },
+      });
+      assert.equal(result.ok, true, status);
+    }
   });
 
   it("builds a pending intent for enter decisions", () => {
