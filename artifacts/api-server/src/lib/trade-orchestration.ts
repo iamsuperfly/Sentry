@@ -57,18 +57,24 @@ export type TradeOrchestrationDeps = {
 
 /** Production defaults — lazy so unit tests with injected deps never load the SDK. */
 export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestrationDeps> {
-  const [{ readDreamdexMarkets }, { evaluateMarkets }, { createPersistedTradeIntent, expireStalePendingTradeIntentsForTelegram }, { executePersistedTradeForTelegram }] =
+  const [{ readDreamdexMarkets }, { evaluateMarkets }, { createPersistedTradeIntent, expireStalePendingTradeIntentsForTelegram }, { readPendingMarketState }, { executePersistedTradeForTelegram }] =
     await Promise.all([
       import("./dreamdex.ts"),
       import("./strategy.ts"),
       import("./trade-persistence.ts"),
+      import("./live-execution-adapter.ts"),
       import("./trade-execution.ts"),
     ]);
   return {
     readMarkets: readDreamdexMarkets,
     evaluate: evaluateMarkets,
     expireStalePending: ({ config, identity, markets }) =>
-      expireStalePendingTradeIntentsForTelegram(config, identity, markets),
+      expireStalePendingTradeIntentsForTelegram(
+        config,
+        identity,
+        markets,
+        (marketId) => readPendingMarketState(config, marketId),
+      ),
     persistIntent: createPersistedTradeIntent as TradeOrchestrationDeps["persistIntent"],
     executePersisted: executePersistedTradeForTelegram,
   };
