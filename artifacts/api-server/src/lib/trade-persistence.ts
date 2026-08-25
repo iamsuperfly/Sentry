@@ -39,6 +39,9 @@ export async function expireStalePendingTradeIntents(
   userId: string,
   markets: PendingIntentMarketState[],
   nowSec = Math.floor(Date.now() / 1000),
+  readMissingMarket?: (
+    marketId: string,
+  ) => Promise<PendingIntentMarketState | undefined>,
 ): Promise<string[]> {
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
@@ -50,19 +53,25 @@ export async function expireStalePendingTradeIntents(
   if (error) throw new Error("Unable to read pending trade intents.");
 
   const byMarket = new Map(markets.map((market) => [market.marketId, market]));
-  const stale = (data ?? []).filter((row) =>
-    isStalePendingIntent({
-      status: String(row.status),
-      transactionHash: (row.transaction_hash as string | null) ?? null,
-      filledContracts:
-        (row.filled_contracts as string | number | null) ?? null,
-      market: byMarket.get(String(row.market_id)),
-      nowSec,
-    }),
-  );
-
   const expiredIds: string[] = [];
-  for (const row of stale) {
+  for (const row of data ?? []) {
+    const market =
+      byMarket.get(String(row.market_id)) ??
+      (readMissingMarket
+        ? await readMissingMarket(String(row.market_id))
+        : undefined);
+    if (
+      !isStalePendingIntent({
+        status: String(row.status),
+        transactionHash: (row.transaction_hash as string | null) ?? null,
+        filledContracts:
+          (row.filled_contracts as string | number | null) ?? null,
+        market,
+        nowSec,
+      })
+    ) {
+      continue;
+    }
     const reason =
       "Pending intent expired or its market is no longer tradable; no transaction or fill was recorded.";
     if (
@@ -82,10 +91,19 @@ export async function expireStalePendingTradeIntentsForTelegram(
   config: AppConfig,
   identity: TelegramIdentity,
   markets: PendingIntentMarketState[],
+  readMissingMarket?: (
+    marketId: string,
+  ) => Promise<PendingIntentMarketState | undefined>,
 ): Promise<string[]> {
   const wallet = await findWallet(config, identity.id);
   if (!wallet) return [];
-  return expireStalePendingTradeIntents(config, wallet.user_id, markets);
+  return expireStalePendingTradeIntents(
+    config,
+    wallet.user_id,
+    markets,
+    undefined,
+    readMissingMarket,
+  );
 }
 
 export type PersistedUserSettings = UserRiskPreferences & {

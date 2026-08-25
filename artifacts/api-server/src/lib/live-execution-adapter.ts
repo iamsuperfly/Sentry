@@ -18,6 +18,7 @@ import {
 import { SOMNIA_TESTNET_ADDRESSES } from "@somnia-chain/markets-sdk";
 import type { AppConfig } from "../config.ts";
 import type { TradeIntent } from "./execution.ts";
+import type { PendingIntentMarketState } from "./trade-state.ts";
 import {
   LiveBroadcastError,
   type ChainReadSnapshot,
@@ -194,4 +195,27 @@ export function createProductionLiveExecutionDeps(
       claimPendingTrade(config, { tradeId, userId }),
     updateTrade: (input) => updateTradeExecution(config, input),
   };
+}
+
+export async function readPendingMarketState(
+  config: AppConfig,
+  marketId: string,
+): Promise<PendingIntentMarketState> {
+  const marketClient = exchange(config);
+  try {
+    const market = await marketClient.client.getMarketOnchain(marketId as Hex);
+    return {
+      marketId,
+      expiry: market.expiry.toString(),
+      indexerStatus: "Unknown",
+      onchainStatus: market.status,
+      tradable: market.status === 1,
+      finalized: market.finalized,
+    };
+  } finally {
+    await Promise.race([
+      marketClient.close(),
+      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+    ]);
+  }
 }
