@@ -79,6 +79,7 @@ describe("validateUserSettings", () => {
         maxDailyLoss: 30,
         maxOpenPositions: 2,
         dailyProfitTarget: null,
+        executionMode: "testnet",
       },
       system,
     );
@@ -94,6 +95,7 @@ describe("validateUserSettings", () => {
         maxDailyLoss: 10,
         maxOpenPositions: 1,
         dailyProfitTarget: null,
+        executionMode: "testnet",
       },
       system,
     );
@@ -110,6 +112,7 @@ describe("validateUserSettings", () => {
         maxDailyLoss: 10,
         maxOpenPositions: 1,
         dailyProfitTarget: null,
+        executionMode: "testnet",
       },
       system,
     );
@@ -126,6 +129,7 @@ describe("validateUserSettings", () => {
         maxDailyLoss: 100,
         maxOpenPositions: 1,
         dailyProfitTarget: null,
+        executionMode: "testnet",
       },
       system,
     );
@@ -142,6 +146,7 @@ describe("validateUserSettings", () => {
         maxDailyLoss: 10,
         maxOpenPositions: 9,
         dailyProfitTarget: null,
+        executionMode: "testnet",
       },
       system,
     );
@@ -158,6 +163,7 @@ describe("validateUserSettings", () => {
         maxDailyLoss: 70,
         maxOpenPositions: 5,
         dailyProfitTarget: 25,
+        executionMode: "testnet",
       },
       system,
     );
