@@ -23,6 +23,7 @@ import {
   isTerminalTradeStatus,
   isStalePendingIntent,
   OPEN_TRADE_STATUSES,
+  TERMINAL_TRADE_STATUSES,
   type PendingIntentMarketState,
   sumRealizedPnl,
 } from "./trade-state.ts";
@@ -113,6 +114,7 @@ export type PersistedUserSettings = UserRiskPreferences & {
 type SettingsRow = {
   user_id: string;
   trading_enabled: boolean;
+  execution_mode: string;
   default_stake_usdso: string | number;
   max_trade_stake_usdso: string | number;
   max_daily_loss_usdso: string | number;
@@ -152,9 +154,11 @@ function numeric(value: string | number | null, field: string): number {
 }
 
 function mapSettings(row: SettingsRow): PersistedUserSettings {
+  const mode = row.execution_mode === "paper" ? "paper" : "testnet";
   return {
     userId: row.user_id,
     tradingEnabled: row.trading_enabled,
+    executionMode: mode,
     defaultStake: numeric(row.default_stake_usdso, "default_stake_usdso"),
     maxTradeStake: numeric(row.max_trade_stake_usdso, "max_trade_stake_usdso"),
     maxDailyLoss: numeric(row.max_daily_loss_usdso, "max_daily_loss_usdso"),
@@ -173,7 +177,7 @@ export async function getUserSettings(
   const { data, error } = await getSupabaseClient(config)
     .from("user_settings")
     .select(
-      "user_id, trading_enabled, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
+      "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
     )
     .eq("user_id", userId)
     .maybeSingle();
@@ -184,7 +188,7 @@ export async function getUserSettings(
       .from("user_settings")
       .insert({ user_id: userId })
       .select(
-        "user_id, trading_enabled, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
+        "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
       )
       .single();
     if (createError || !created) throw new Error("Unable to create user settings.");
@@ -210,6 +214,7 @@ export async function saveUserSettings(
       {
         user_id: userId,
         trading_enabled: checked.settings.tradingEnabled,
+        execution_mode: checked.settings.executionMode,
         default_stake_usdso: checked.settings.defaultStake,
         max_trade_stake_usdso: checked.settings.maxTradeStake,
         max_daily_loss_usdso: checked.settings.maxDailyLoss,
@@ -219,7 +224,7 @@ export async function saveUserSettings(
       { onConflict: "user_id" },
     )
     .select(
-      "user_id, trading_enabled, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
+      "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
     )
     .single();
 
@@ -471,6 +476,103 @@ export async function createPersistedTradeIntent(input: {
 
   const trade = await persistTradeIntent(input.config, built.intent);
   return { ok: true, userId, trade, intent: built.intent };
+}
+
+export type TradeSummary = {
+  id: string;
+  symbol: string;
+  direction: string;
+  status: string;
+  stake: number;
+  contracts: number | null;
+  filledContracts: number | null;
+  limitPrice: number | null;
+  marketId: string;
+  transactionHash: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  submittedAt: string | null;
+  filledAt: string | null;
+};
+
+function mapTradeSummary(row: Record<string, unknown>): TradeSummary {
+  const num = (v: unknown): number | null => {
+    if (v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  return {
+    id: String(row.id),
+    symbol: String(row.symbol ?? ""),
+    direction: String(row.direction ?? ""),
+    status: String(row.status ?? ""),
+    stake: Number(row.stake_usdso ?? 0),
+    contracts: num(row.contracts),
+    filledContracts: num(row.filled_contracts),
+    limitPrice: num(row.limit_price),
+    marketId: String(row.market_id ?? ""),
+    transactionHash: (row.transaction_hash as string | null) ?? null,
+    errorMessage: (row.error_message as string | null) ?? null,
+    createdAt: String(row.created_at ?? ""),
+    submittedAt: (row.submitted_at as string | null) ?? null,
+    filledAt: (row.filled_at as string | null) ?? null,
+  };
+}
+
+export async function listOpenPositions(
+  config: AppConfig,
+  userId: string,
+  limit = 20,
+): Promise<TradeSummary[]> {
+  const { data, error } = await getSupabaseClient(config)
+    .from("trades")
+    .select(
+      "id, symbol, direction, status, stake_usdso, contracts, filled_contracts, limit_price, market_id, transaction_hash, error_message, created_at, submitted_at, filled_at",
+    )
+    .eq("user_id", userId)
+    .in("status", [...OPEN_TRADE_STATUSES])
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error("Unable to list open positions.");
+  return (data ?? []).map((row) => mapTradeSummary(row as Record<string, unknown>));
+}
+
+export async function listTradeHistory(
+  config: AppConfig,
+  userId: string,
+  limit = 20,
+): Promise<TradeSummary[]> {
+  const { data, error } = await getSupabaseClient(config)
+    .from("trades")
+    .select(
+      "id, symbol, direction, status, stake_usdso, contracts, filled_contracts, limit_price, market_id, transaction_hash, error_message, created_at, submitted_at, filled_at",
+    )
+    .eq("user_id", userId)
+    .in("status", [...TERMINAL_TRADE_STATUSES])
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error("Unable to list trade history.");
+  return (data ?? []).map((row) => mapTradeSummary(row as Record<string, unknown>));
+}
+
+export async function disableTradingForTelegram(
+  config: AppConfig,
+  identity: TelegramIdentity,
+): Promise<PersistedUserSettings> {
+  const userId = await ensureUser(config, identity);
+  const current = await getUserSettings(config, userId);
+  return saveUserSettings(config, userId, {
+    ...current,
+    tradingEnabled: false,
+  });
+}
+
+export async function getUserSettingsForTelegram(
+  config: AppConfig,
+  identity: TelegramIdentity,
+): Promise<PersistedUserSettings> {
+  const userId = await ensureUser(config, identity);
+  return getUserSettings(config, userId);
 }
 
 export function defaultUserPreferences(): UserRiskPreferences {

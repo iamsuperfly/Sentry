@@ -14,6 +14,8 @@ import {
   type SystemRiskLimits,
 } from "./system-limits.ts";
 
+export type ExecutionMode = "paper" | "testnet";
+
 export type UserRiskPreferences = {
   tradingEnabled: boolean;
   defaultStake: number;
@@ -22,6 +24,8 @@ export type UserRiskPreferences = {
   maxOpenPositions: number;
   /** Null/undefined = disabled. Positive = stop new trades when realized PnL >= target. */
   dailyProfitTarget: number | null;
+  /** paper = never request live chain submit; testnet = may request when ENABLE_LIVE_EXECUTION=true */
+  executionMode: ExecutionMode;
 };
 
 /** Runtime inputs that are not user-editable preferences. */
@@ -137,6 +141,15 @@ export function validateUserSettings(
     }
   }
 
+  const executionMode = prefs.executionMode ?? "testnet";
+  if (executionMode !== "paper" && executionMode !== "testnet") {
+    return {
+      ok: false,
+      code: "invalid_execution_mode",
+      reason: "execution_mode must be paper or testnet.",
+    };
+  }
+
   return {
     ok: true,
     settings: {
@@ -147,6 +160,7 @@ export function validateUserSettings(
       maxOpenPositions,
       dailyProfitTarget:
         dailyProfitTarget === undefined ? null : dailyProfitTarget,
+      executionMode,
     },
   };
 }
@@ -286,4 +300,5 @@ export const DEFAULT_USER_PREFERENCES: UserRiskPreferences = {
   maxDailyLoss: 10,
   maxOpenPositions: 1,
   dailyProfitTarget: null,
+  executionMode: "testnet",
 };
