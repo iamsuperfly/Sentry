@@ -43,3 +43,37 @@ export function sumRealizedPnl(
     return total + value;
   }, 0);
 }
+
+export type PendingIntentMarketState = {
+  marketId: string;
+  expiry: string;
+  indexerStatus: string;
+  onchainStatus: number;
+  tradable: boolean;
+  finalized: boolean;
+};
+
+export function isStalePendingIntent(input: {
+  status: string;
+  transactionHash: string | null;
+  filledContracts: string | number | null;
+  market: PendingIntentMarketState | undefined;
+  nowSec: number;
+}): boolean {
+  if (input.status !== "pending") return false;
+  if (input.transactionHash) return false;
+  if (input.filledContracts !== null && Number(input.filledContracts) > 0)
+    return false;
+  const market = input.market;
+  if (!market) return false;
+
+  const expiry = Number(market.expiry);
+  const expired = Number.isFinite(expiry) && expiry <= input.nowSec;
+  return (
+    expired ||
+    market.finalized ||
+    market.indexerStatus === "Finalized" ||
+    !market.tradable ||
+    market.onchainStatus !== 1
+  );
+}

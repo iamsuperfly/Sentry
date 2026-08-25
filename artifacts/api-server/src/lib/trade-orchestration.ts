@@ -36,6 +36,11 @@ export type TradeOrchestrationDeps = {
     asset?: string,
   ) => Promise<DreamdexDiagnostic>;
   evaluate: (markets: DreamdexDiagnostic["markets"]) => StrategyRunResult;
+  expireStalePending?: (input: {
+    config: AppConfig;
+    identity: TelegramIdentity;
+    markets: DreamdexDiagnostic["markets"];
+  }) => Promise<string[]>;
   persistIntent: (input: {
     config: AppConfig;
     identity: TelegramIdentity;
@@ -52,7 +57,7 @@ export type TradeOrchestrationDeps = {
 
 /** Production defaults — lazy so unit tests with injected deps never load the SDK. */
 export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestrationDeps> {
-  const [{ readDreamdexMarkets }, { evaluateMarkets }, { createPersistedTradeIntent }, { executePersistedTradeForTelegram }] =
+  const [{ readDreamdexMarkets }, { evaluateMarkets }, { createPersistedTradeIntent, expireStalePendingTradeIntentsForTelegram }, { executePersistedTradeForTelegram }] =
     await Promise.all([
       import("./dreamdex.ts"),
       import("./strategy.ts"),
@@ -62,6 +67,8 @@ export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestr
   return {
     readMarkets: readDreamdexMarkets,
     evaluate: evaluateMarkets,
+    expireStalePending: ({ config, identity, markets }) =>
+      expireStalePendingTradeIntentsForTelegram(config, identity, markets),
     persistIntent: createPersistedTradeIntent as TradeOrchestrationDeps["persistIntent"],
     executePersisted: executePersistedTradeForTelegram,
   };
@@ -170,6 +177,27 @@ export async function runTelegramTradeCycle(input: {
       code: "no_enter_decision",
       reason: "Stage 2 produced no enter decision for the current markets.",
     };
+  }
+
+  if (deps.expireStalePending) {
+    try {
+      await deps.expireStalePending({
+        config: input.config,
+        identity: input.identity,
+        markets: snapshot.markets,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message.slice(0, 200)
+          : "Unable to expire stale trade intents.";
+      return {
+        ok: false,
+        code: "stale_intent_cleanup_failed",
+        reason: message,
+        decision,
+      };
+    }
   }
 
   let persisted: PersistResult;
