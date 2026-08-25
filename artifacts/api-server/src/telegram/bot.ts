@@ -24,11 +24,54 @@ import {
 } from "../lib/supabase";
 import { decryptPrivateKey, encryptPrivateKey } from "../lib/wallet-crypto";
 import { runTelegramTradeCycle } from "../lib/trade-orchestration";
+import {
+  applySettingsPatch,
+  formatSettingsHelp,
+  formatUserSettings,
+  parseSettingsCommand,
+  shouldRequestLiveExecution,
+} from "../lib/telegram-settings";
+import {
+  disableTradingForTelegram,
+  getOpenPositionCount,
+  getRealizedPnlToday,
+  getUserSettingsForTelegram,
+  listOpenPositions,
+  listTradeHistory,
+  saveUserSettingsForTelegram,
+} from "../lib/trade-persistence";
 
 const active = new Set<number>();
 const lastStart = new Map<number, number>();
 const cooldownMs = 30_000;
 const tradeActive = new Set<number>();
+
+function formatTradeLines(
+  trades: Array<{
+    id: string;
+    symbol: string;
+    direction: string;
+    status: string;
+    stake: number;
+    limitPrice: number | null;
+    transactionHash: string | null;
+    errorMessage: string | null;
+  }>,
+  emptyMessage: string,
+): string {
+  if (trades.length === 0) return emptyMessage;
+  return trades
+    .map((trade, index) => {
+      const price =
+        trade.limitPrice === null ? "n/a" : String(trade.limitPrice);
+      const hash = trade.transactionHash
+        ? `\n   tx: ${trade.transactionHash}`
+        : "";
+      const err = trade.errorMessage ? `\n   note: ${trade.errorMessage}` : "";
+      return `${index + 1}. ${trade.symbol} ${trade.direction.toUpperCase()} · ${trade.status}\n   stake ${trade.stake} tUSDC · limit ${price}${hash}${err}`;
+    })
+    .join("\n\n");
+}
 
 function safeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
@@ -216,7 +259,7 @@ async function runFunding(
 
   const finalBalance = await balances(config, wallet.address);
   await ctx.reply(
-    `✅ Wallet setup is complete.\n\nAddress: ${wallet.address}\nSTT: ${finalBalance.stt}\ntUSDC: ${finalBalance.tusdc}\n\nYou can request tUSDC with /faucet <amount>. Trading is not enabled yet.`,
+    `✅ Wallet setup is complete.\n\nAddress: ${wallet.address}\nSTT: ${finalBalance.stt}\ntUSDC: ${finalBalance.tusdc}\n\nYou can request tUSDC with /faucet <amount>. Configure risk with /settings, then enable trading when ready.`,
   );
 }
 
@@ -410,16 +453,28 @@ export function createTelegramBot(config: AppConfig): Bot {
         await ctx.reply("You do not have a wallet yet. Use /start first.");
         return;
       }
+      const identity = {
+        id: ctx.from.id,
+        username: ctx.from.username,
+        first_name: ctx.from.first_name,
+        last_name: ctx.from.last_name,
+      };
+      const settings = await getUserSettingsForTelegram(config, identity);
+      if (!settings.tradingEnabled) {
+        await ctx.reply(
+          "Trading is disabled for your account.\n\nEnable it with /settings trading on, or review /settings.",
+        );
+        return;
+      }
+      const liveRequested = shouldRequestLiveExecution(
+        settings.executionMode,
+        true,
+      );
       const result = await runTelegramTradeCycle({
         config,
-        identity: {
-          id: ctx.from.id,
-          username: ctx.from.username,
-          first_name: ctx.from.first_name,
-          last_name: ctx.from.last_name,
-        },
-        // Intentional trade request; ENABLE_LIVE_EXECUTION still gates chain writes.
-        liveExecutionRequested: true,
+        identity,
+        liveExecutionRequested: liveRequested,
+        stake: settings.defaultStake,
       });
       if (!result.ok) {
         await ctx.reply(
@@ -433,12 +488,12 @@ export function createTelegramBot(config: AppConfig): Bot {
           ? "\n\nLive chain submit is blocked (feature gate). Intent may still be recorded."
           : "";
         await ctx.reply(
-          `Trade intent: ${result.tradeId}\nSymbol: ${result.intentSymbol}\nStake: ${result.stake} tUSDC\nDirection: ${result.decision.direction ?? "n/a"}\n\nExecution: ${exec.code}\n${exec.reason}${gated}`,
+          `Trade intent: ${result.tradeId}\nSymbol: ${result.intentSymbol}\nStake: ${result.stake} tUSDC\nDirection: ${result.decision.direction ?? "n/a"}\nMode: ${settings.executionMode}\n\nExecution: ${exec.code}\n${exec.reason}${gated}`,
         );
         return;
       }
       await ctx.reply(
-        `✅ Execution update\n\nTrade: ${result.tradeId}\nStatus: ${exec.status}\nHash: ${exec.transactionHash ?? "n/a"}`,
+        `✅ Execution update\n\nTrade: ${result.tradeId}\nStatus: ${exec.status}\nHash: ${exec.transactionHash ?? "n/a"}\nMode: ${settings.executionMode}`,
       );
     } catch (error) {
       await ctx.reply(
@@ -450,9 +505,131 @@ export function createTelegramBot(config: AppConfig): Bot {
   });
   bot.command("help", (ctx) =>
     ctx.reply(
-      "DreamDEX Event Contracts bot\n\n/start — create/resume wallet and gas funding\n/faucet <amount> — request tUSDC, up to 500/day\n/trade — run strategy → persist intent → gated execution\n/status — wallet balances and faucet allowance\n/privatekey — export your private key\n/fund — recover interrupted STT funding\n\nThe faucet allowance resets at the next UTC day. Chain submits require ENABLE_LIVE_EXECUTION=true.",
+      [
+        "DreamDEX Event Contracts bot",
+        "",
+        "/start — create/resume wallet and gas funding",
+        "/faucet <amount> — request tUSDC (up to 500/day UTC)",
+        "/status — wallet, balances, trading state, settings",
+        "/settings — view or change your risk parameters",
+        "/trade — strategy → persist intent → gated execution",
+        "/positions — active positions only",
+        "/history — completed, failed, or cancelled trades",
+        "/stop — disable trading (keeps history)",
+        "/fund — recover interrupted STT funding",
+        "/privatekey — export private key (auto-deletes)",
+        "",
+        "Paper mode never requests live submit. Use /settings mode paper|testnet.",
+        "Chain submits still require ENABLE_LIVE_EXECUTION=true on the server.",
+      ].join("\n"),
     ),
   );
+  bot.command("positions", async (ctx) => {
+    try {
+      if (!ctx.from) return;
+      const userId = await ensureUser(config, ctx.from);
+      const positions = await listOpenPositions(config, userId);
+      await ctx.reply(
+        formatTradeLines(
+          positions,
+          "No active positions.\n\nOpen statuses: pending, submitted, partially_filled, filled.",
+        ),
+      );
+    } catch (error) {
+      await ctx.reply(`Unable to load positions.\n\nReason: ${safeError(error)}`);
+    }
+  });
+  bot.command("history", async (ctx) => {
+    try {
+      if (!ctx.from) return;
+      const userId = await ensureUser(config, ctx.from);
+      const history = await listTradeHistory(config, userId);
+      await ctx.reply(
+        formatTradeLines(
+          history,
+          "No completed trades yet.\n\nHistory includes cancelled, settled, redeemed, and failed.",
+        ),
+      );
+    } catch (error) {
+      await ctx.reply(`Unable to load history.\n\nReason: ${safeError(error)}`);
+    }
+  });
+  bot.command("stop", async (ctx) => {
+    try {
+      if (!ctx.from) return;
+      const settings = await disableTradingForTelegram(config, {
+        id: ctx.from.id,
+        username: ctx.from.username,
+        first_name: ctx.from.first_name,
+        last_name: ctx.from.last_name,
+      });
+      await ctx.reply(
+        `Trading disabled for your account.\n\nHistory and positions are kept.\nTrading enabled: ${settings.tradingEnabled}\n\nRe-enable with /settings trading on.`,
+      );
+    } catch (error) {
+      await ctx.reply(`Unable to stop trading.\n\nReason: ${safeError(error)}`);
+    }
+  });
+  bot.command("settings", async (ctx) => {
+    try {
+      if (!ctx.from) return;
+      const identity = {
+        id: ctx.from.id,
+        username: ctx.from.username,
+        first_name: ctx.from.first_name,
+        last_name: ctx.from.last_name,
+      };
+      const raw = typeof ctx.match === "string" ? ctx.match : "";
+      const parsed = parseSettingsCommand(raw);
+      if (parsed.kind === "help") {
+        await ctx.reply(formatSettingsHelp(config.systemLimits));
+        return;
+      }
+      if (parsed.kind === "error") {
+        await ctx.reply(`❌ ${parsed.reason}`);
+        return;
+      }
+      const current = await getUserSettingsForTelegram(config, identity);
+      if (parsed.kind === "show") {
+        const [openCount, pnl] = await Promise.all([
+          getOpenPositionCount(config, current.userId),
+          getRealizedPnlToday(config, current.userId),
+        ]);
+        await ctx.reply(
+          formatUserSettings({
+            settings: current,
+            system: config.systemLimits,
+            openPositionCount: openCount,
+            realizedPnlToday: pnl,
+          }),
+        );
+        return;
+      }
+      const applied = applySettingsPatch(
+        current,
+        parsed.patch,
+        config.systemLimits,
+      );
+      if (!applied.ok) {
+        await ctx.reply(`❌ ${applied.code}\n${applied.reason}`);
+        return;
+      }
+      const saved = await saveUserSettingsForTelegram(
+        config,
+        identity,
+        applied.settings,
+      );
+      await ctx.reply(
+        `✅ Updated ${parsed.label}\n\n` +
+          formatUserSettings({
+            settings: saved,
+            system: config.systemLimits,
+          }),
+      );
+    } catch (error) {
+      await ctx.reply(`Unable to update settings.\n\nReason: ${safeError(error)}`);
+    }
+  });
   bot.command("status", async (ctx) => {
     try {
       if (!ctx.from) return;
@@ -462,12 +639,42 @@ export function createTelegramBot(config: AppConfig): Bot {
           "You do not have a wallet yet. Use /start to begin.",
         ));
       await reconcileFaucetTransactions(config, wallet.user_id, wallet.address);
-      const [current, allowance] = await Promise.all([
+      const identity = {
+        id: ctx.from.id,
+        username: ctx.from.username,
+        first_name: ctx.from.first_name,
+        last_name: ctx.from.last_name,
+      };
+      const [current, allowance, settings, openCount, pnl] = await Promise.all([
         balances(config, wallet.address),
         getFaucetAllowance(config, wallet.user_id),
+        getUserSettingsForTelegram(config, identity),
+        getOpenPositionCount(config, wallet.user_id),
+        getRealizedPnlToday(config, wallet.user_id),
       ]);
       await ctx.reply(
-        `Wallet status: ready\n\nAddress: ${wallet.address}\nNetwork: Somnia Shannon (50312)\nSTT: ${current.stt}\ntUSDC: ${current.tusdc}\n\nFaucet today: ${allowance.consumed} / 500 tUSDC\nRemaining: ${allowance.remaining} tUSDC\nAllowance resets at the next UTC day.`,
+        [
+          "Wallet status: ready",
+          "",
+          `Address: ${wallet.address}`,
+          "Network: Somnia Shannon (50312)",
+          `STT: ${current.stt}`,
+          `tUSDC: ${current.tusdc}`,
+          "",
+          `Trading: ${settings.tradingEnabled ? "enabled" : "disabled"}`,
+          `Mode: ${settings.executionMode}`,
+          `Default stake: ${settings.defaultStake} tUSDC`,
+          `Max stake: ${settings.maxTradeStake} tUSDC`,
+          `Max daily loss: ${settings.maxDailyLoss} tUSDC`,
+          `Max open positions: ${settings.maxOpenPositions}`,
+          `Open positions: ${openCount}`,
+          `PnL today (UTC): ${pnl} tUSDC`,
+          `Live execution env: ${config.enableLiveExecution ? "ON" : "OFF"}`,
+          "",
+          `Faucet today: ${allowance.consumed} / 500 tUSDC`,
+          `Remaining: ${allowance.remaining} tUSDC`,
+          "Allowance resets at the next UTC day.",
+        ].join("\n"),
       );
     } catch (error) {
       await ctx.reply(
