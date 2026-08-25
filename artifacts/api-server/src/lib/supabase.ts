@@ -147,6 +147,76 @@ export async function updateTransaction(
   if (error) throw new Error("Unable to update transaction record.");
 }
 
+export type TradeExecutionUpdate = {
+  tradeId: string;
+  userId: string;
+  status: string;
+  fromStatus?: string;
+  transactionHash?: string;
+  orderId?: string;
+  filledContracts?: number;
+  errorMessage?: string | null;
+};
+
+/**
+ * Claim a pending intent exactly once. The status predicate is the concurrency
+ * boundary: two workers can race, but only the worker that updates one row may
+ * touch the chain.
+ */
+export async function claimPendingTrade(
+  config: AppConfig,
+  input: { tradeId: string; userId: string },
+): Promise<boolean> {
+  const { data, error } = await getSupabaseClient(config)
+    .from("trades")
+    .update({
+      status: "submitted",
+      submitted_at: new Date().toISOString(),
+      error_message: null,
+    })
+    .eq("id", input.tradeId)
+    .eq("user_id", input.userId)
+    .eq("status", "pending")
+    .select("id");
+
+  if (error) throw new Error("Unable to claim trade intent.");
+  return Array.isArray(data) && data.length === 1;
+}
+
+export async function updateTradeExecution(
+  config: AppConfig,
+  input: TradeExecutionUpdate,
+): Promise<void> {
+  const update: Record<string, unknown> = {
+    status: input.status,
+  };
+  if (input.transactionHash !== undefined)
+    update.transaction_hash = input.transactionHash;
+  if (input.orderId !== undefined) update.order_id = input.orderId;
+  if (input.filledContracts !== undefined)
+    update.filled_contracts = input.filledContracts;
+  if (input.errorMessage !== undefined)
+    update.error_message = input.errorMessage;
+  if (input.status === "submitted")
+    update.submitted_at = new Date().toISOString();
+  if (input.status === "filled" || input.status === "partially_filled") {
+    update.filled_at = new Date().toISOString();
+  }
+
+  let query = getSupabaseClient(config)
+    .from("trades")
+    .update(update)
+    .eq("id", input.tradeId)
+    .eq("user_id", input.userId);
+  if (input.fromStatus) query = query.eq("status", input.fromStatus);
+
+  const { data, error } = await query.select("id");
+  if (error) throw new Error("Unable to update trade execution.");
+  if (input.fromStatus && (!Array.isArray(data) || data.length !== 1)) {
+    throw new Error("Trade execution state changed concurrently.");
+  }
+}
+
 export async function getOnboardingTransactions(
   config: AppConfig,
   userId: string,

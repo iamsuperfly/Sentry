@@ -5,6 +5,7 @@ import type { AppConfig } from "../config.ts";
 import type { TradeIntent } from "./execution.ts";
 import {
   evaluateProtocolGates,
+  LiveBroadcastError,
   mapDirectionToOutcome,
   SHANNON_TUSDC,
   submitLiveOrder,
@@ -336,5 +337,71 @@ describe("submitLiveOrder gate + mocked chain", () => {
     });
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.code, "not_pending");
+  });
+
+  it("does not touch the chain when the atomic claim is lost", async () => {
+    let reads = 0;
+    let writes = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => false,
+        readChain: async () => {
+          reads += 1;
+          return {
+            market: market(),
+            tusdcBalance: 50,
+            allowance: 50,
+            nowSec: 1_700_000_000,
+          };
+        },
+        placeIocOrder: async () => {
+          writes += 1;
+          return {
+            transactionHash: "0xnever",
+            filledContracts: 5,
+            status: "filled",
+          };
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "already_claimed");
+    assert.equal(reads, 0);
+    assert.equal(writes, 0);
+  });
+
+  it("keeps a submission submitted when broadcast outcome is uncertain", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        writes,
+        claimTrade: async () => true,
+        placeIocOrder: async () => {
+          throw new LiveBroadcastError(
+            "RPC connection dropped after send",
+            "uncertain",
+            "0xmaybe",
+          );
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.equal(r.code, "broadcast_uncertain");
+      assert.equal(r.status, "submitted");
+    }
+    assert.equal(writes.at(-1)?.status, "submitted");
+    assert.equal(writes.at(-1)?.transactionHash, "0xmaybe");
+    assert.equal(writes.some((w) => w.status === "failed"), false);
   });
 });

@@ -66,12 +66,33 @@ export type ChainReadSnapshot = {
 };
 
 export type ChainWriteResult = {
-  transactionHash: string;
+  transactionHash?: string;
   orderId?: string;
   filledContracts: number;
   status: "filled" | "partially_filled" | "failed";
   errorMessage?: string;
 };
+
+export type BroadcastState =
+  | "before_broadcast"
+  | "confirmed_failure"
+  | "uncertain";
+
+export class LiveBroadcastError extends Error {
+  readonly broadcastState: BroadcastState;
+  readonly transactionHash?: string;
+
+  constructor(
+    message: string,
+    broadcastState: BroadcastState,
+    transactionHash?: string,
+  ) {
+    super(message);
+    this.name = "LiveBroadcastError";
+    this.broadcastState = broadcastState;
+    this.transactionHash = transactionHash;
+  }
+}
 
 /** Injectable deps — production wires SDK; tests inject mocks. */
 export type LiveExecutionDeps = {
@@ -97,7 +118,13 @@ export type LiveExecutionDeps = {
     orderId?: string;
     filledContracts?: number;
     errorMessage?: string;
+    fromStatus?: IntentStatus;
   }) => Promise<void>;
+  /** Conditional pending → submitted claim; absent only for legacy unit mocks. */
+  claimTrade?: (input: {
+    tradeId: string;
+    userId: string;
+  }) => Promise<boolean>;
 };
 
 function floorToTick(price: number, tickSize: number): number {
@@ -321,8 +348,47 @@ export async function submitLiveOrder(input: {
     };
   }
 
+  let claimed = false;
+  if (input.deps.claimTrade) {
+    claimed = await input.deps.claimTrade({
+      tradeId: input.tradeId,
+      userId: input.intent.userId,
+    });
+    if (!claimed) {
+      return {
+        ok: false,
+        code: "already_claimed",
+        reason: "Trade is already being executed or has already completed.",
+        tradeId: input.tradeId,
+        status: "submitted",
+      };
+    }
+  }
+
   // Defensive: private key material must never be logged; only used for signing.
-  const snapshot = await input.deps.readChain(input.intent);
+  let snapshot: ChainReadSnapshot;
+  try {
+    snapshot = await input.deps.readChain(input.intent);
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message.slice(0, 240)
+        : "Unable to read chain state.";
+    await input.deps.updateTrade({
+      tradeId: input.tradeId,
+      userId: input.intent.userId,
+      status: "failed",
+      errorMessage: message,
+      fromStatus: claimed ? "submitted" : "pending",
+    });
+    return {
+      ok: false,
+      code: "chain_read_failed",
+      reason: message,
+      tradeId: input.tradeId,
+      status: "failed",
+    };
+  }
   const protocol = evaluateProtocolGates({
     intent: input.intent,
     market: snapshot.market,
@@ -338,6 +404,7 @@ export async function submitLiveOrder(input: {
         userId: input.intent.userId,
         status: "failed",
         errorMessage: protocol.reason,
+        fromStatus: claimed ? "submitted" : "pending",
       });
     }
     return {
@@ -360,11 +427,14 @@ export async function submitLiveOrder(input: {
       });
     }
 
-    await input.deps.updateTrade({
-      tradeId: input.tradeId,
-      userId: input.intent.userId,
-      status: "submitted",
-    });
+    if (!claimed) {
+      await input.deps.updateTrade({
+        tradeId: input.tradeId,
+        userId: input.intent.userId,
+        status: "submitted",
+        fromStatus: "pending",
+      });
+    }
 
     const placed = await input.deps.placeIocOrder({
       privateKey,
@@ -385,6 +455,7 @@ export async function submitLiveOrder(input: {
         status: "failed",
         transactionHash: placed.transactionHash,
         errorMessage: "Illegal status transition after submit.",
+        fromStatus: "submitted",
       });
       return {
         ok: false,
@@ -403,6 +474,7 @@ export async function submitLiveOrder(input: {
       orderId: placed.orderId,
       filledContracts: placed.filledContracts,
       errorMessage: placed.errorMessage,
+      fromStatus: "submitted",
     });
 
     if (nextStatus === "failed") {
@@ -428,11 +500,31 @@ export async function submitLiveOrder(input: {
   } catch (error) {
     const message =
       error instanceof Error ? error.message.slice(0, 240) : "Unknown submit error";
+    if (error instanceof LiveBroadcastError && error.broadcastState === "uncertain") {
+      await input.deps.updateTrade({
+        tradeId: input.tradeId,
+        userId: input.intent.userId,
+        status: "submitted",
+        transactionHash: error.transactionHash,
+        errorMessage: `Broadcast outcome uncertain: ${message}`,
+        fromStatus: claimed ? "submitted" : "submitted",
+      });
+      return {
+        ok: false,
+        code: "broadcast_uncertain",
+        reason: "The node did not prove whether the transaction was broadcast. Trade remains submitted for reconciliation.",
+        tradeId: input.tradeId,
+        status: "submitted",
+      };
+    }
     await input.deps.updateTrade({
       tradeId: input.tradeId,
       userId: input.intent.userId,
       status: "failed",
+      transactionHash:
+        error instanceof LiveBroadcastError ? error.transactionHash : undefined,
       errorMessage: message,
+      fromStatus: claimed ? "submitted" : "pending",
     });
     return {
       ok: false,
