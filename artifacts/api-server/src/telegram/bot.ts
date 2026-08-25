@@ -23,10 +23,12 @@ import {
   updateTransaction,
 } from "../lib/supabase";
 import { decryptPrivateKey, encryptPrivateKey } from "../lib/wallet-crypto";
+import { runTelegramTradeCycle } from "../lib/trade-orchestration";
 
 const active = new Set<number>();
 const lastStart = new Map<number, number>();
 const cooldownMs = 30_000;
+const tradeActive = new Set<number>();
 
 function safeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
@@ -395,9 +397,60 @@ export function createTelegramBot(config: AppConfig): Bot {
     }
   });
   bot.command("faucet", (ctx) => requestFaucet(ctx, config));
+  bot.command("trade", async (ctx) => {
+    if (!ctx.from) return;
+    if (tradeActive.has(ctx.from.id)) {
+      await ctx.reply("A trade cycle is already in progress.");
+      return;
+    }
+    tradeActive.add(ctx.from.id);
+    try {
+      const wallet = await findWallet(config, ctx.from.id);
+      if (!wallet) {
+        await ctx.reply("You do not have a wallet yet. Use /start first.");
+        return;
+      }
+      const result = await runTelegramTradeCycle({
+        config,
+        identity: {
+          id: ctx.from.id,
+          username: ctx.from.username,
+          first_name: ctx.from.first_name,
+          last_name: ctx.from.last_name,
+        },
+        // Intentional trade request; ENABLE_LIVE_EXECUTION still gates chain writes.
+        liveExecutionRequested: true,
+      });
+      if (!result.ok) {
+        await ctx.reply(
+          `❌ Trade cycle did not complete.\n\nCode: ${result.code}\nReason: ${result.reason}`,
+        );
+        return;
+      }
+      const exec = result.execution;
+      if (!exec.ok) {
+        const gated = exec.gated
+          ? "\n\nLive chain submit is blocked (feature gate). Intent may still be recorded."
+          : "";
+        await ctx.reply(
+          `Trade intent: ${result.tradeId}\nSymbol: ${result.intentSymbol}\nStake: ${result.stake} tUSDC\nDirection: ${result.decision.direction ?? "n/a"}\n\nExecution: ${exec.code}\n${exec.reason}${gated}`,
+        );
+        return;
+      }
+      await ctx.reply(
+        `✅ Execution update\n\nTrade: ${result.tradeId}\nStatus: ${exec.status}\nHash: ${exec.transactionHash ?? "n/a"}`,
+      );
+    } catch (error) {
+      await ctx.reply(
+        `❌ Trade cycle failed.\n\nReason: ${safeError(error)}`,
+      );
+    } finally {
+      tradeActive.delete(ctx.from.id);
+    }
+  });
   bot.command("help", (ctx) =>
     ctx.reply(
-      "DreamDEX Event Contracts bot\n\n/start — create/resume wallet and gas funding\n/faucet <amount> — request tUSDC, up to 500/day\n/status — wallet balances and faucet allowance\n/privatekey — export your private key\n/fund — recover interrupted STT funding\n\nThe faucet allowance resets at the next UTC day. Trading is not enabled yet.",
+      "DreamDEX Event Contracts bot\n\n/start — create/resume wallet and gas funding\n/faucet <amount> — request tUSDC, up to 500/day\n/trade — run strategy → persist intent → gated execution\n/status — wallet balances and faucet allowance\n/privatekey — export your private key\n/fund — recover interrupted STT funding\n\nThe faucet allowance resets at the next UTC day. Chain submits require ENABLE_LIVE_EXECUTION=true.",
     ),
   );
   bot.command("status", async (ctx) => {
