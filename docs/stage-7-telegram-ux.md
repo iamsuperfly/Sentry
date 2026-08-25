@@ -1,9 +1,17 @@
 # Stage 7 — Telegram user layer
 
-Work in progress on branch `stage-7-telegram-ux`.
+## Commands
+- `/start` `/help` `/status` `/trade` `/positions` `/history` `/stop` `/settings`
 
-Goals:
-- User-facing commands: /start /help /status /trade /positions /history /stop /settings
-- Configurable risk settings persisted in Supabase
-- System ceilings remain authoritative
-- No live trading changes in this branch
+## Settings (Supabase `user_settings`)
+- default stake, max trade stake, max daily loss, max open positions
+- daily profit target (or off)
+- trading enabled/disabled
+- execution mode: `paper` | `testnet`
+
+Validated against system ceilings. Rejects out-of-range values.
+
+## Safety
+- Does not enable `ENABLE_LIVE_EXECUTION`
+- Paper mode never requests live submit
+- `/stop` disables trading without deleting history
