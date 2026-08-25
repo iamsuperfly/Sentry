@@ -12,10 +12,7 @@ import type { AppConfig } from "../config.ts";
 import type { DreamdexDiagnostic } from "./dreamdex.ts";
 import type { LiveSubmitResult } from "./live-execution.ts";
 import type { StrategyDecision, StrategyRunResult } from "./strategy.ts";
-import {
-  expireStalePendingTradeIntentsForTelegram,
-  type TelegramIdentity,
-} from "./trade-persistence.ts";
+import type { TelegramIdentity } from "./trade-persistence.ts";
 
 export const ORCHESTRATION_MODULE = "stage-6-execution-wiring";
 
@@ -70,7 +67,8 @@ export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestr
   return {
     readMarkets: readDreamdexMarkets,
     evaluate: evaluateMarkets,
-    expireStalePending: expireStalePendingTradeIntentsForTelegram,
+    expireStalePending: ({ config, identity, markets }) =>
+      expireStalePendingTradeIntentsForTelegram(config, identity, markets),
     persistIntent: createPersistedTradeIntent as TradeOrchestrationDeps["persistIntent"],
     executePersisted: executePersistedTradeForTelegram,
   };

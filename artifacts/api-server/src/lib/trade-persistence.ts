@@ -21,7 +21,9 @@ import {
 import {
   getUtcDayBounds,
   isTerminalTradeStatus,
+  isStalePendingIntent,
   OPEN_TRADE_STATUSES,
+  type PendingIntentMarketState,
   sumRealizedPnl,
 } from "./trade-state.ts";
 
@@ -31,40 +33,6 @@ export type TelegramIdentity = {
   first_name: string;
   last_name?: string;
 };
-
-export type PendingIntentMarketState = {
-  marketId: string;
-  expiry: string;
-  indexerStatus: string;
-  onchainStatus: number;
-  tradable: boolean;
-  finalized: boolean;
-};
-
-export function isStalePendingIntent(input: {
-  status: string;
-  transactionHash: string | null;
-  filledContracts: string | number | null;
-  market: PendingIntentMarketState | undefined;
-  nowSec: number;
-}): boolean {
-  if (input.status !== "pending") return false;
-  if (input.transactionHash) return false;
-  if (input.filledContracts !== null && Number(input.filledContracts) > 0)
-    return false;
-  const market = input.market;
-  if (!market) return false;
-
-  const expiry = Number(market.expiry);
-  const expired = Number.isFinite(expiry) && expiry <= input.nowSec;
-  return (
-    expired ||
-    market.finalized ||
-    market.indexerStatus === "Finalized" ||
-    !market.tradable ||
-    market.onchainStatus !== 1
-  );
-}
 
 export async function expireStalePendingTradeIntents(
   config: AppConfig,

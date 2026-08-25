@@ -3,11 +3,11 @@ import { describe, it } from "node:test";
 import {
   getUtcDayBounds,
   isOpenTradeStatus,
+  isStalePendingIntent,
   isTerminalTradeStatus,
   sumRealizedPnl,
 } from "./trade-state.ts";
 import { buildReentryIdempotencyKey } from "./execution.ts";
-import { isStalePendingIntent } from "./trade-persistence.ts";
 
 describe("open position persistence rules", () => {
   it("counts only genuinely open or pending statuses", () => {
