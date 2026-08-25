@@ -7,6 +7,7 @@ import {
   sumRealizedPnl,
 } from "./trade-state.ts";
 import { buildReentryIdempotencyKey } from "./execution.ts";
+import { isStalePendingIntent } from "./trade-persistence.ts";
 
 describe("open position persistence rules", () => {
   it("counts only genuinely open or pending statuses", () => {
@@ -49,6 +50,80 @@ describe("open position persistence rules", () => {
     const second = buildReentryIdempotencyKey(base, "terminal-trade-2");
 
     assert.notEqual(first, second);
+  });
+});
+
+describe("stale pending intent cleanup rules", () => {
+  const activeMarket = {
+    marketId: "market-active",
+    expiry: "2000",
+    indexerStatus: "Trading",
+    onchainStatus: 1,
+    tradable: true,
+    finalized: false,
+  };
+
+  it("expires a pending intent when its market is finalized", () => {
+    assert.equal(
+      isStalePendingIntent({
+        status: "pending",
+        transactionHash: null,
+        filledContracts: null,
+        market: { ...activeMarket, finalized: true },
+        nowSec: 1500,
+      }),
+      true,
+    );
+  });
+
+  it("expires a pending intent when its market has passed expiry", () => {
+    assert.equal(
+      isStalePendingIntent({
+        status: "pending",
+        transactionHash: null,
+        filledContracts: null,
+        market: activeMarket,
+        nowSec: 2000,
+      }),
+      true,
+    );
+  });
+
+  it("keeps a genuinely active pending intent open", () => {
+    assert.equal(
+      isStalePendingIntent({
+        status: "pending",
+        transactionHash: null,
+        filledContracts: null,
+        market: { ...activeMarket, expiry: "3000" },
+        nowSec: 1500,
+      }),
+      false,
+    );
+  });
+
+  it("never expires a pending intent after a transaction or fill exists", () => {
+    const staleMarket = { ...activeMarket, finalized: true };
+    assert.equal(
+      isStalePendingIntent({
+        status: "pending",
+        transactionHash: "0xabc",
+        filledContracts: null,
+        market: staleMarket,
+        nowSec: 1500,
+      }),
+      false,
+    );
+    assert.equal(
+      isStalePendingIntent({
+        status: "pending",
+        transactionHash: null,
+        filledContracts: 1,
+        market: staleMarket,
+        nowSec: 1500,
+      }),
+      false,
+    );
   });
 });
 

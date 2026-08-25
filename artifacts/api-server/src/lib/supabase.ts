@@ -217,6 +217,32 @@ export async function updateTradeExecution(
   }
 }
 
+/**
+ * Close a stale pending intent only when it still has no broadcast or fill.
+ * The conditional update makes cleanup safe against a concurrent executor.
+ */
+export async function expirePendingTrade(
+  config: AppConfig,
+  input: { tradeId: string; userId: string; reason: string },
+): Promise<boolean> {
+  const { data, error } = await getSupabaseClient(config)
+    .from("trades")
+    .update({
+      status: "failed",
+      error_message: input.reason,
+      reject_reason: input.reason,
+    })
+    .eq("id", input.tradeId)
+    .eq("user_id", input.userId)
+    .eq("status", "pending")
+    .is("transaction_hash", null)
+    .is("filled_contracts", null)
+    .select("id");
+
+  if (error) throw new Error("Unable to expire stale trade intent.");
+  return Array.isArray(data) && data.length === 1;
+}
+
 export async function getOnboardingTransactions(
   config: AppConfig,
   userId: string,
