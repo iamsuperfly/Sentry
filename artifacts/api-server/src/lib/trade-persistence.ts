@@ -53,6 +53,15 @@ type PersistedTradeRow = {
   strategy_version: string;
   direction: "up" | "down";
   status: string;
+  decision?: unknown;
+  stake_usdso?: string | number;
+  contracts?: string | number;
+  limit_price?: string | number;
+  wallet_address?: string;
+  symbol?: string;
+  side?: string;
+  pool_address?: string;
+  reject_reason?: string | null;
   [key: string]: unknown;
 };
 
@@ -203,6 +212,57 @@ export async function getTradeByIdempotencyKey(
     throw new Error("Idempotency key already belongs to another user.");
   }
   return data as PersistedTradeRow;
+}
+
+export async function getTradeIntentForUser(
+  config: AppConfig,
+  userId: string,
+  tradeId: string,
+): Promise<TradeIntent | null> {
+  const { data, error } = await getSupabaseClient(config)
+    .from("trades")
+    .select(
+      "id, user_id, market_id, strategy_name, strategy_version, direction, status, decision, stake_usdso, contracts, limit_price, wallet_address, symbol, side, pool_address, idempotency_key, reject_reason",
+    )
+    .eq("id", tradeId)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw new Error("Unable to read trade intent.");
+  if (!data) return null;
+
+  const row = data as PersistedTradeRow;
+  const required = [
+    row.wallet_address,
+    row.symbol,
+    row.side,
+    row.pool_address,
+    row.idempotency_key,
+    row.stake_usdso,
+    row.contracts,
+    row.limit_price,
+  ];
+  if (required.some((value) => value === undefined || value === null)) {
+    throw new Error("Persisted trade intent is incomplete.");
+  }
+
+  return {
+    userId: row.user_id,
+    idempotencyKey: String(row.idempotency_key),
+    strategyName: row.strategy_name,
+    strategyVersion: row.strategy_version,
+    decision: row.decision as StrategyDecision,
+    stake: numeric(row.stake_usdso as string | number, "stake_usdso"),
+    contracts: numeric(row.contracts as string | number, "contracts"),
+    limitPrice: numeric(row.limit_price as string | number, "limit_price"),
+    walletAddress: row.wallet_address as string,
+    marketId: row.market_id,
+    symbol: row.symbol as string,
+    direction: row.direction,
+    side: row.side as "buy",
+    poolAddress: row.pool_address as string,
+    status: row.status as TradeIntent["status"],
+    rejectReason: row.reject_reason ?? null,
+  };
 }
 
 async function getLatestTradeForIntent(
