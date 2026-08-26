@@ -57,9 +57,20 @@ export function resolveMarketDurationSeconds(meta: {
     const n = Number(meta.intervalSec);
     if (Number.isFinite(n) && n > 0) return n;
   }
+  // Number(null) === 0 — must not treat missing tradingStart as epoch.
+  if (
+    meta.tradingStart === null ||
+    meta.tradingStart === undefined ||
+    meta.tradingStart === ""
+  ) {
+    return null;
+  }
+  if (meta.expiry === null || meta.expiry === undefined || meta.expiry === "") {
+    return null;
+  }
   const start = Number(meta.tradingStart);
   const end = Number(meta.expiry);
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start <= 0) return null;
   const startSec = start >= 1e12 ? start / 1000 : start;
   const endSec = end >= 1e12 ? end / 1000 : end;
   const duration = endSec - startSec;
