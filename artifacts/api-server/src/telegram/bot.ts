@@ -15,7 +15,6 @@ import {
   createTransaction,
   ensureUser,
   findWallet,
-  getSupabaseClient,
   getOnboardingTransactions,
   getFaucetAllowance,
   reserveFaucetTransaction,
@@ -33,45 +32,24 @@ import {
 } from "../lib/telegram-settings";
 import {
   disableTradingForTelegram,
-  getOpenPositionCount,
   getRealizedPnlToday,
   getUserSettingsForTelegram,
-  listOpenPositions,
-  listTradeHistory,
   saveUserSettingsForTelegram,
 } from "../lib/trade-persistence";
+import { getActiveOpenPositionCount } from "../lib/active-positions";
+import {
+  formatHistoryMessage,
+  formatPositionsMessage,
+  listActivePositionsForDisplay,
+  listHistoryForDisplay,
+} from "../lib/position-display";
+import { formatTradeExecutionMessage } from "../lib/telegram-trade-format";
+import { startFinalizationLoop } from "./finalization-loop";
 
 const active = new Set<number>();
 const lastStart = new Map<number, number>();
 const cooldownMs = 30_000;
 const tradeActive = new Set<number>();
-
-function formatTradeLines(
-  trades: Array<{
-    id: string;
-    symbol: string;
-    direction: string;
-    status: string;
-    stake: number;
-    limitPrice: number | null;
-    transactionHash: string | null;
-    errorMessage: string | null;
-  }>,
-  emptyMessage: string,
-): string {
-  if (trades.length === 0) return emptyMessage;
-  return trades
-    .map((trade, index) => {
-      const price =
-        trade.limitPrice === null ? "n/a" : String(trade.limitPrice);
-      const hash = trade.transactionHash
-        ? `\n   tx: ${trade.transactionHash}`
-        : "";
-      const err = trade.errorMessage ? `\n   note: ${trade.errorMessage}` : "";
-      return `${index + 1}. ${trade.symbol} ${trade.direction.toUpperCase()} · ${trade.status}\n   stake ${trade.stake} tUSDC · limit ${price}${hash}${err}`;
-    })
-    .join("\n\n");
-}
 
 function safeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
@@ -105,19 +83,14 @@ async function confirm(
     if (result.status === "failed") {
       await ctx.reply(
         `❌ Transaction failed.\n\nReason: Transaction reverted on-chain.\nTransaction: ${hash}`,
-        {
-          reply_markup: link(config, hash),
-        },
+        { reply_markup: link(config, hash) },
       );
       return false;
     }
     const text = typeof message === "function" ? await message() : message;
-    await ctx.reply(
-      `${text}\n\nTransaction confirmed.\n\nTransaction: ${hash}`,
-      {
-        reply_markup: link(config, hash),
-      },
-    );
+    await ctx.reply(`${text}\n\nTransaction confirmed.\n\nTransaction: ${hash}`, {
+      reply_markup: link(config, hash),
+    });
     return true;
   } catch (error) {
     await updateTransaction(config, transactionId, {
@@ -128,9 +101,7 @@ async function confirm(
     }).catch(() => undefined);
     await ctx.reply(
       `❌ Transaction failed.\n\nReason: ${safeError(error)}\nTransaction: ${hash}`,
-      {
-        reply_markup: link(config, hash),
-      },
+      { reply_markup: link(config, hash) },
     );
     return false;
   }
@@ -140,10 +111,7 @@ async function runFunding(
   ctx: Context,
   config: AppConfig,
   userId: string,
-  wallet: {
-    address: string;
-    encrypted_private_key: string;
-  },
+  wallet: { address: string; encrypted_private_key: string },
 ) {
   const transactions = await getOnboardingTransactions(
     config,
@@ -152,10 +120,7 @@ async function runFunding(
   );
 
   async function reconcile(type: "INITIAL_STT_SPONSOR" | "TUSDC_FAUCET") {
-    const records = transactions.filter(
-      (transaction) => transaction.type === type,
-    );
-    for (const transaction of records) {
+    for (const transaction of transactions.filter((t) => t.type === type)) {
       if (transaction.status === "confirmed") continue;
       if (!transaction.transaction_hash) {
         if (transaction.status === "pending") {
@@ -191,15 +156,13 @@ async function runFunding(
 
   const refreshed = await balances(config, wallet.address);
   const fundingRecords = transactions.filter(
-    (transaction) => transaction.type === "INITIAL_STT_SPONSOR",
+    (t) => t.type === "INITIAL_STT_SPONSOR",
   );
-  const confirmedFunding = fundingRecords.find(
-    (transaction) => transaction.status === "confirmed",
-  );
+  const confirmedFunding = fundingRecords.find((t) => t.status === "confirmed");
   const pendingFunding = fundingRecords.find(
-    (transaction) =>
-      transaction.transaction_hash &&
-      (transaction.status === "pending" || transaction.status === "submitted"),
+    (t) =>
+      t.transaction_hash &&
+      (t.status === "pending" || t.status === "submitted"),
   );
   if (
     !confirmedFunding &&
@@ -208,9 +171,7 @@ async function runFunding(
   ) {
     await ctx.reply(
       `⏳ Your STT sponsorship is still pending.\n\nTransaction: ${pendingFunding.transaction_hash}`,
-      {
-        reply_markup: link(config, pendingFunding.transaction_hash),
-      },
+      { reply_markup: link(config, pendingFunding.transaction_hash) },
     );
     return;
   }
@@ -234,9 +195,7 @@ async function runFunding(
       });
       await ctx.reply(
         `⏳ Sending ${config.initialGasSponsorAmount} STT...\n\nTransaction: ${funding.hash}`,
-        {
-          reply_markup: link(config, funding.hash),
-        },
+        { reply_markup: link(config, funding.hash) },
       );
       if (
         !(await confirm(
@@ -273,9 +232,7 @@ async function reconcileFaucetTransactions(
     userId,
     walletAddress,
   );
-  for (const transaction of transactions.filter(
-    (item) => item.type === "TUSDC_FAUCET",
-  )) {
+  for (const transaction of transactions.filter((i) => i.type === "TUSDC_FAUCET")) {
     if (transaction.status === "confirmed" || !transaction.transaction_hash) {
       if (transaction.status === "pending" && !transaction.transaction_hash) {
         await updateTransaction(config, transaction.id, {
@@ -286,10 +243,7 @@ async function reconcileFaucetTransactions(
       }
       continue;
     }
-    const inspected = await inspectReceipt(
-      config,
-      transaction.transaction_hash,
-    );
+    const inspected = await inspectReceipt(config, transaction.transaction_hash);
     if (inspected) {
       await updateTransaction(config, transaction.id, {
         status: inspected.status,
@@ -317,7 +271,6 @@ async function requestFaucet(ctx: Context, config: AppConfig) {
     );
     return;
   }
-
   try {
     const wallet = await findWallet(config, ctx.from.id);
     if (!wallet) {
@@ -331,7 +284,6 @@ async function requestFaucet(ctx: Context, config: AppConfig) {
       walletAddress: wallet.address,
       amount,
     });
-
     try {
       const faucetTx = await faucet(
         config,
@@ -346,16 +298,10 @@ async function requestFaucet(ctx: Context, config: AppConfig) {
         `⏳ Requesting ${amount} tUSDC.\n\nRemaining today: ${reservation.remaining} tUSDC\nTransaction: ${faucetTx.hash}`,
         { reply_markup: link(config, faucetTx.hash) },
       );
-      await confirm(
-        ctx,
-        config,
-        reservation.transaction_id,
-        faucetTx.hash,
-        async () => {
-          const current = await balances(config, wallet.address);
-          return `✅ ${amount} tUSDC received.\n\nBalance: ${current.tusdc} tUSDC\nRemaining today: ${reservation.remaining} tUSDC`;
-        },
-      );
+      await confirm(ctx, config, reservation.transaction_id, faucetTx.hash, async () => {
+        const current = await balances(config, wallet.address);
+        return `✅ ${amount} tUSDC received.\n\nBalance: ${current.tusdc} tUSDC\nRemaining today: ${reservation.remaining} tUSDC`;
+      });
     } catch (error) {
       await updateTransaction(config, reservation.transaction_id, {
         status: "failed",
@@ -426,9 +372,7 @@ export function createTelegramBot(config: AppConfig): Bot {
     try {
       const wallet = await findWallet(config, ctx.from.id);
       if (!wallet)
-        return void (await ctx.reply(
-          "You do not have a wallet yet. Use /start first.",
-        ));
+        return void (await ctx.reply("You do not have a wallet yet. Use /start first."));
       const userId = await ensureUser(config, ctx.from);
       await runFunding(ctx, config, userId, wallet);
     } catch (error) {
@@ -466,10 +410,7 @@ export function createTelegramBot(config: AppConfig): Bot {
         );
         return;
       }
-      const liveRequested = shouldRequestLiveExecution(
-        settings.executionMode,
-        true,
-      );
+      const liveRequested = shouldRequestLiveExecution(settings.executionMode, true);
       const result = await runTelegramTradeCycle({
         config,
         identity,
@@ -483,22 +424,39 @@ export function createTelegramBot(config: AppConfig): Bot {
         return;
       }
       const exec = result.execution;
+      const decisionMeta = result.decision as {
+        tradingStart?: string;
+        intervalSec?: string | null;
+        expiry?: string;
+      };
+      const tradeMsg = formatTradeExecutionMessage({
+        tradeId: result.tradeId,
+        symbol: result.intentSymbol,
+        direction: String(result.decision.direction ?? "n/a"),
+        status: exec.ok ? String(exec.status) : exec.code,
+        stake: result.stake,
+        limitPrice: result.decision.limitPriceHint,
+        transactionHash: exec.ok ? (exec.transactionHash ?? null) : null,
+        tradingStart: decisionMeta.tradingStart,
+        marketExpiry: result.decision.expiry,
+        intervalSec: decisionMeta.intervalSec,
+        explorerTxBaseUrl: config.explorerTxBaseUrl,
+      });
       if (!exec.ok) {
         const gated = exec.gated
           ? "\n\nLive chain submit is blocked (feature gate). Intent may still be recorded."
           : "";
         await ctx.reply(
-          `Trade intent: ${result.tradeId}\nSymbol: ${result.intentSymbol}\nStake: ${result.stake} tUSDC\nDirection: ${result.decision.direction ?? "n/a"}\nMode: ${settings.executionMode}\n\nExecution: ${exec.code}\n${exec.reason}${gated}`,
+          `${tradeMsg}\nMode: ${settings.executionMode}\n\nExecution: ${exec.code}\n${exec.reason}${gated}`,
+          { link_preview_options: { is_disabled: true } },
         );
         return;
       }
-      await ctx.reply(
-        `✅ Execution update\n\nTrade: ${result.tradeId}\nStatus: ${exec.status}\nHash: ${exec.transactionHash ?? "n/a"}\nMode: ${settings.executionMode}`,
-      );
+      await ctx.reply(`${tradeMsg}\nMode: ${settings.executionMode}`, {
+        link_preview_options: { is_disabled: true },
+      });
     } catch (error) {
-      await ctx.reply(
-        `❌ Trade cycle failed.\n\nReason: ${safeError(error)}`,
-      );
+      await ctx.reply(`❌ Trade cycle failed.\n\nReason: ${safeError(error)}`);
     } finally {
       tradeActive.delete(ctx.from.id);
     }
@@ -511,7 +469,7 @@ export function createTelegramBot(config: AppConfig): Bot {
         "/start — create/resume wallet and gas funding",
         "/faucet <amount> — request tUSDC (up to 500/day UTC)",
         "/status — wallet, balances, trading state, settings",
-        "/settings — view or change your risk parameters",
+        "/settings — view or change risk (e.g. max stake 30)",
         "/trade — strategy → persist intent → gated execution",
         "/positions — active positions only",
         "/history — completed, failed, or cancelled trades",
@@ -528,13 +486,10 @@ export function createTelegramBot(config: AppConfig): Bot {
     try {
       if (!ctx.from) return;
       const userId = await ensureUser(config, ctx.from);
-      const positions = await listOpenPositions(config, userId);
-      await ctx.reply(
-        formatTradeLines(
-          positions,
-          "No active positions.\n\nOpen statuses: pending, submitted, partially_filled, filled.",
-        ),
-      );
+      const positions = await listActivePositionsForDisplay(config, userId);
+      await ctx.reply(formatPositionsMessage(positions, config.explorerTxBaseUrl), {
+        link_preview_options: { is_disabled: true },
+      });
     } catch (error) {
       await ctx.reply(`Unable to load positions.\n\nReason: ${safeError(error)}`);
     }
@@ -543,13 +498,10 @@ export function createTelegramBot(config: AppConfig): Bot {
     try {
       if (!ctx.from) return;
       const userId = await ensureUser(config, ctx.from);
-      const history = await listTradeHistory(config, userId);
-      await ctx.reply(
-        formatTradeLines(
-          history,
-          "No completed trades yet.\n\nHistory includes cancelled, settled, redeemed, and failed.",
-        ),
-      );
+      const history = await listHistoryForDisplay(config, userId);
+      await ctx.reply(formatHistoryMessage(history, config.explorerTxBaseUrl), {
+        link_preview_options: { is_disabled: true },
+      });
     } catch (error) {
       await ctx.reply(`Unable to load history.\n\nReason: ${safeError(error)}`);
     }
@@ -592,7 +544,7 @@ export function createTelegramBot(config: AppConfig): Bot {
       const current = await getUserSettingsForTelegram(config, identity);
       if (parsed.kind === "show") {
         const [openCount, pnl] = await Promise.all([
-          getOpenPositionCount(config, current.userId),
+          getActiveOpenPositionCount(config, current.userId),
           getRealizedPnlToday(config, current.userId),
         ]);
         await ctx.reply(
@@ -621,10 +573,7 @@ export function createTelegramBot(config: AppConfig): Bot {
       );
       await ctx.reply(
         `✅ Updated ${parsed.label}\n\n` +
-          formatUserSettings({
-            settings: saved,
-            system: config.systemLimits,
-          }),
+          formatUserSettings({ settings: saved, system: config.systemLimits }),
       );
     } catch (error) {
       await ctx.reply(`Unable to update settings.\n\nReason: ${safeError(error)}`);
@@ -635,9 +584,7 @@ export function createTelegramBot(config: AppConfig): Bot {
       if (!ctx.from) return;
       const wallet = await findWallet(config, ctx.from.id);
       if (!wallet)
-        return void (await ctx.reply(
-          "You do not have a wallet yet. Use /start to begin.",
-        ));
+        return void (await ctx.reply("You do not have a wallet yet. Use /start to begin."));
       await reconcileFaucetTransactions(config, wallet.user_id, wallet.address);
       const identity = {
         id: ctx.from.id,
@@ -649,7 +596,8 @@ export function createTelegramBot(config: AppConfig): Bot {
         balances(config, wallet.address),
         getFaucetAllowance(config, wallet.user_id),
         getUserSettingsForTelegram(config, identity),
-        getOpenPositionCount(config, wallet.user_id),
+        // Same expiry-aware definition as /positions
+        getActiveOpenPositionCount(config, wallet.user_id),
         getRealizedPnlToday(config, wallet.user_id),
       ]);
       await ctx.reply(
@@ -677,9 +625,7 @@ export function createTelegramBot(config: AppConfig): Bot {
         ].join("\n"),
       );
     } catch (error) {
-      await ctx.reply(
-        `Unable to read live balances.\n\nReason: ${safeError(error)}`,
-      );
+      await ctx.reply(`Unable to read live balances.\n\nReason: ${safeError(error)}`);
     }
   });
   bot.command("privatekey", async (ctx) => {
@@ -695,15 +641,11 @@ export function createTelegramBot(config: AppConfig): Bot {
       );
       setTimeout(
         () =>
-          ctx.api
-            .deleteMessage(sent.chat.id, sent.message_id)
-            .catch(() => undefined),
+          ctx.api.deleteMessage(sent.chat.id, sent.message_id).catch(() => undefined),
         60_000,
       );
     } catch (error) {
-      await ctx.reply(
-        `Unable to retrieve the private key.\n\nReason: ${safeError(error)}`,
-      );
+      await ctx.reply(`Unable to retrieve the private key.\n\nReason: ${safeError(error)}`);
     }
   });
   bot.on("message:text", (ctx) =>
@@ -720,16 +662,19 @@ export function createTelegramBot(config: AppConfig): Bot {
 
 export function startTelegramBot(config: AppConfig): Bot {
   const bot = createTelegramBot(config);
+  const finalization = startFinalizationLoop(bot, config);
   void bot
     .start({
       onStart: (info) =>
-        logger.info(
-          { username: info.username },
-          "Telegram bot polling started",
-        ),
+        logger.info({ username: info.username }, "Telegram bot polling started"),
     })
     .catch((error) =>
       logger.error({ err: safeError(error) }, "Telegram polling stopped"),
     );
+  const originalStop = bot.stop.bind(bot);
+  bot.stop = (...args: Parameters<typeof bot.stop>) => {
+    finalization.stop();
+    return originalStop(...args);
+  };
   return bot;
 }

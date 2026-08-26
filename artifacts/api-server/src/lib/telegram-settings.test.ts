@@ -14,20 +14,40 @@ describe("parseSettingsCommand", () => {
     assert.equal(parseSettingsCommand(undefined).kind, "show");
   });
 
-  it("parses stake and max_stake", () => {
+  it("parses stake and max stake (natural + underscore)", () => {
     const stake = parseSettingsCommand("stake 5");
     assert.equal(stake.kind, "patch");
     if (stake.kind === "patch") assert.equal(stake.patch.defaultStake, 5);
+
+    const maxNatural = parseSettingsCommand("max stake 25");
+    assert.equal(maxNatural.kind, "patch");
+    if (maxNatural.kind === "patch")
+      assert.equal(maxNatural.patch.maxTradeStake, 25);
 
     const max = parseSettingsCommand("max_stake 25");
     assert.equal(max.kind, "patch");
     if (max.kind === "patch") assert.equal(max.patch.maxTradeStake, 25);
   });
 
-  it("parses profit_target off", () => {
-    const p = parseSettingsCommand("profit_target off");
+  it("parses max daily loss and max positions with spaces", () => {
+    const loss = parseSettingsCommand("max daily loss 70");
+    assert.equal(loss.kind, "patch");
+    if (loss.kind === "patch") assert.equal(loss.patch.maxDailyLoss, 70);
+
+    const positions = parseSettingsCommand("max positions 5");
+    assert.equal(positions.kind, "patch");
+    if (positions.kind === "patch")
+      assert.equal(positions.patch.maxOpenPositions, 5);
+  });
+
+  it("parses profit target off", () => {
+    const p = parseSettingsCommand("profit target off");
     assert.equal(p.kind, "patch");
     if (p.kind === "patch") assert.equal(p.patch.dailyProfitTarget, null);
+
+    const legacy = parseSettingsCommand("profit_target off");
+    assert.equal(legacy.kind, "patch");
+    if (legacy.kind === "patch") assert.equal(legacy.patch.dailyProfitTarget, null);
   });
 
   it("parses trading and mode", () => {

@@ -32,6 +32,10 @@ function market(
     onchainStatus: overrides.onchainStatus ?? 1,
     tradable: overrides.tradable ?? true,
     finalized: overrides.finalized ?? false,
+    intervalSec: overrides.intervalSec ?? null,
+    isResolved: overrides.isResolved ?? false,
+    isVoided: overrides.isVoided ?? false,
+    winningOutcome: overrides.winningOutcome ?? null,
     collateral: overrides.collateral ?? "0xtusdc",
     decimals: overrides.decimals ?? 6,
     book: overrides.book ?? {
@@ -78,18 +82,15 @@ describe("extractBookTop", () => {
 });
 
 describe("evaluateMarket", () => {
-  const now = 1_700_000_000;
+  it("skips unsupported assets", () => {
+    const d = evaluateMarket(market({ marketId: "0x1", asset: "SOL" }));
+    assert.equal(d.action, "skip");
+    assert.equal(d.skipCode, "unsupported_asset");
+  });
 
   it("skips finalized markets", () => {
     const d = evaluateMarket(
-      market({
-        marketId: "0xf",
-        finalized: true,
-        indexerStatus: "Finalized",
-        tradable: false,
-        onchainStatus: 4,
-      }),
-      now,
+      market({ marketId: "0x1", finalized: true }),
     );
     assert.equal(d.action, "skip");
     assert.equal(d.skipCode, "finalized");
@@ -97,29 +98,18 @@ describe("evaluateMarket", () => {
 
   it("skips non-tradable markets", () => {
     const d = evaluateMarket(
-      market({
-        marketId: "0xnt",
-        tradable: false,
-        onchainStatus: 2,
-        indexerStatus: "Locked",
-      }),
-      now,
+      market({ marketId: "0x1", tradable: false, onchainStatus: 2 }),
     );
     assert.equal(d.action, "skip");
     assert.equal(d.skipCode, "not_tradable");
   });
 
   it("skips near expiry", () => {
+    const now = 1_700_000_000;
     const d = evaluateMarket(
       market({
-        marketId: "0xnear",
-        expiry: String(now + DEFAULT_MIN_SECONDS_TO_EXPIRY - 10),
-        book: {
-          yesBids: [],
-          yesAsks: [{ price: p(0.3), quantity: "1" }],
-          noBids: [],
-          noAsks: [],
-        },
+        marketId: "0x1",
+        expiry: String(now + 60),
       }),
       now,
     );
@@ -127,24 +117,15 @@ describe("evaluateMarket", () => {
     assert.equal(d.skipCode, "near_expiry");
   });
 
-  it("skips empty books", () => {
-    const d = evaluateMarket(
-      market({ marketId: "0xempty", expiry: String(now + 900) }),
-      now,
-    );
-    assert.equal(d.action, "skip");
-    assert.equal(d.skipCode, "no_liquidity");
-  });
-
-  it("enters YES when yesAsk is sufficiently below fair", () => {
-    const yesAsk = FAIR_PROBABILITY - DEFAULT_EDGE_THRESHOLD;
+  it("enters YES when ask is sufficiently below fair", () => {
+    const now = 1_700_000_000;
     const d = evaluateMarket(
       market({
         marketId: "0xyes",
         expiry: String(now + 900),
         book: {
           yesBids: [{ price: p(0.4), quantity: "1" }],
-          yesAsks: [{ price: p(yesAsk), quantity: "5" }],
+          yesAsks: [{ price: p(0.4), quantity: "1" }],
           noBids: [],
           noAsks: [],
         },
@@ -153,42 +134,42 @@ describe("evaluateMarket", () => {
     );
     assert.equal(d.action, "enter");
     assert.equal(d.direction, "YES");
-    assert.equal(d.limitPriceHint, yesAsk);
+    assert.equal(d.limitPriceHint, 0.4);
+    assert.ok(d.edge !== null && d.edge >= DEFAULT_EDGE_THRESHOLD);
     assert.equal(d.strategyName, STRATEGY_NAME);
-    assert.ok((d.edge ?? 0) >= DEFAULT_EDGE_THRESHOLD - 1e-9);
-    assert.equal(d.skipCode, null);
+    assert.equal(d.fairProbability, FAIR_PROBABILITY);
   });
 
-  it("enters NO when noAsk is cheap", () => {
+  it("enters NO when NO ask is cheap", () => {
+    const now = 1_700_000_000;
     const d = evaluateMarket(
       market({
         marketId: "0xno",
-        asset: "ETH",
         expiry: String(now + 900),
         book: {
           yesBids: [],
-          yesAsks: [{ price: p(0.55), quantity: "1" }],
+          yesAsks: [],
           noBids: [],
-          noAsks: [{ price: p(0.4), quantity: "3" }],
+          noAsks: [{ price: p(0.4), quantity: "1" }],
         },
       }),
       now,
     );
     assert.equal(d.action, "enter");
     assert.equal(d.direction, "NO");
-    assert.equal(d.limitPriceHint, 0.4);
   });
 
-  it("enters NO when yesAsk is expensive", () => {
+  it("enters NO when YES ask is sufficiently above fair", () => {
+    const now = 1_700_000_000;
     const d = evaluateMarket(
       market({
-        marketId: "0xhigh",
+        marketId: "0xno2",
         expiry: String(now + 900),
         book: {
-          yesBids: [{ price: p(0.58), quantity: "1" }],
+          yesBids: [{ price: p(0.55), quantity: "1" }],
           yesAsks: [{ price: p(0.6), quantity: "1" }],
           noBids: [],
-          noAsks: [],
+          noAsks: [{ price: p(0.45), quantity: "1" }],
         },
       }),
       now,
@@ -197,16 +178,17 @@ describe("evaluateMarket", () => {
     assert.equal(d.direction, "NO");
   });
 
-  it("skips when prices are near fair (no edge)", () => {
+  it("skips when no edge", () => {
+    const now = 1_700_000_000;
     const d = evaluateMarket(
       market({
-        marketId: "0xfair",
+        marketId: "0xflat",
         expiry: String(now + 900),
         book: {
           yesBids: [{ price: p(0.49), quantity: "1" }],
           yesAsks: [{ price: p(0.51), quantity: "1" }],
           noBids: [],
-          noAsks: [],
+          noAsks: [{ price: p(0.51), quantity: "1" }],
         },
       }),
       now,
@@ -215,14 +197,15 @@ describe("evaluateMarket", () => {
     assert.equal(d.skipCode, "no_edge");
   });
 
-  it("skips wide spreads", () => {
+  it("skips wide spread", () => {
+    const now = 1_700_000_000;
     const d = evaluateMarket(
       market({
         marketId: "0xwide",
         expiry: String(now + 900),
         book: {
           yesBids: [{ price: p(0.3), quantity: "1" }],
-          yesAsks: [{ price: p(0.5), quantity: "1" }],
+          yesAsks: [{ price: p(0.45), quantity: "1" }],
           noBids: [],
           noAsks: [],
         },
@@ -232,25 +215,39 @@ describe("evaluateMarket", () => {
     assert.equal(d.action, "skip");
     assert.equal(d.skipCode, "wide_spread");
   });
+
+  it("skips with no liquidity", () => {
+    const now = 1_700_000_000;
+    const d = evaluateMarket(
+      market({
+        marketId: "0xempty",
+        expiry: String(now + 900),
+        book: { yesBids: [], yesAsks: [], noBids: [], noAsks: [] },
+      }),
+      now,
+    );
+    assert.equal(d.action, "skip");
+    assert.equal(d.skipCode, "no_liquidity");
+  });
 });
 
 describe("evaluateMarkets", () => {
-  it("sorts enters by edge descending and counts skips", () => {
+  it("sorts enters by edge descending", () => {
     const now = 1_700_000_000;
-    const result = evaluateMarkets(
+    const run = evaluateMarkets(
       [
         market({
-          marketId: "0xa",
+          marketId: "0xlow",
           expiry: String(now + 900),
           book: {
             yesBids: [],
-            yesAsks: [{ price: p(0.4), quantity: "1" }],
+            yesAsks: [{ price: p(0.41), quantity: "1" }],
             noBids: [],
             noAsks: [],
           },
         }),
         market({
-          marketId: "0xb",
+          marketId: "0xhigh",
           expiry: String(now + 900),
           book: {
             yesBids: [],
@@ -260,18 +257,46 @@ describe("evaluateMarkets", () => {
           },
         }),
         market({
-          marketId: "0xc",
+          marketId: "0xskip",
           finalized: true,
-          tradable: false,
-          indexerStatus: "Finalized",
-          onchainStatus: 4,
+          expiry: String(now + 900),
         }),
       ],
       now,
     );
-    assert.equal(result.enterCount, 2);
-    assert.equal(result.skipCount, 1);
-    assert.equal(result.decisions[0]?.marketId, "0xb");
-    assert.ok((result.decisions[0]?.edge ?? 0) > (result.decisions[1]?.edge ?? 0));
+    assert.equal(run.enterCount, 2);
+    assert.equal(run.skipCount, 1);
+    assert.equal(run.decisions[0]?.marketId, "0xhigh");
+    assert.equal(run.decisions[1]?.marketId, "0xlow");
+    assert.ok(
+      (run.decisions[0]?.edge ?? 0) > (run.decisions[1]?.edge ?? 0),
+    );
+  });
+
+  it("respects custom minSecondsToExpiry", () => {
+    const now = 1_700_000_000;
+    const run = evaluateMarkets(
+      [
+        market({
+          marketId: "0xnear",
+          expiry: String(now + 200),
+          book: {
+            yesBids: [],
+            yesAsks: [{ price: p(0.3), quantity: "1" }],
+            noBids: [],
+            noAsks: [],
+          },
+        }),
+      ],
+      now,
+      {
+        edgeThreshold: DEFAULT_EDGE_THRESHOLD,
+        minSecondsToExpiry: DEFAULT_MIN_SECONDS_TO_EXPIRY,
+        maxSpread: 0.1,
+        supportedAssets: new Set(["BTC", "ETH"]),
+      },
+    );
+    assert.equal(run.enterCount, 0);
+    assert.equal(run.decisions[0]?.skipCode, "near_expiry");
   });
 });
