@@ -3,9 +3,11 @@ import { describe, it } from "node:test";
 import {
   classifyFinalization,
   explorerTxUrl,
+  formatExecutionModeLabel,
   formatFinalizationMessage,
   formatRemaining,
   formatTimeframe,
+  formatUserFacingTradeFailure,
   marketDurationSeconds,
   secondsUntilExpiry,
 } from "./telegram-trade-format.ts";
@@ -195,5 +197,50 @@ describe("finalization messages", () => {
   it("formats failed/cancelled", () => {
     assert.equal(classifyFinalization({ status: "failed" }), "failed");
     assert.equal(classifyFinalization({ status: "cancelled" }), "cancelled");
+  });
+});
+
+describe("formatUserFacingTradeFailure", () => {
+  it("maps no_enter_decision without exposing stage or code", () => {
+    const text = formatUserFacingTradeFailure({
+      code: "no_enter_decision",
+      reason: "Stage 2 produced no enter decision for the current markets.",
+    });
+    assert.match(text, /No trade placed/);
+    assert.match(text, /No funds were used/);
+    assert.doesNotMatch(text, /Stage/);
+    assert.doesNotMatch(text, /no_enter_decision/);
+    assert.doesNotMatch(text, /Code:/);
+  });
+
+  it("maps position and stake limits without internal field names", () => {
+    const pos = formatUserFacingTradeFailure({
+      code: "user_max_open_positions",
+      reason: "user max open positions",
+    });
+    assert.match(pos, /Position limit/);
+    assert.doesNotMatch(pos, /user_max_open_positions/);
+
+    const stake = formatUserFacingTradeFailure({
+      code: "stake_exceeds_user_max",
+    });
+    assert.match(stake, /Stake not allowed/);
+    assert.doesNotMatch(stake, /stake_exceeds/);
+  });
+
+  it("maps live_execution_disabled without env jargon", () => {
+    const text = formatUserFacingTradeFailure({
+      code: "live_execution_disabled",
+      reason: "ENABLE_LIVE_EXECUTION is false",
+    });
+    assert.match(text, /not submitted on-chain/i);
+    assert.doesNotMatch(text, /ENABLE_LIVE/);
+    assert.doesNotMatch(text, /live_execution_disabled/);
+  });
+
+  it("formats execution mode labels for users", () => {
+    assert.match(formatExecutionModeLabel("paper"), /paper/);
+    assert.match(formatExecutionModeLabel("paper"), /no on-chain/);
+    assert.equal(formatExecutionModeLabel("testnet"), "testnet");
   });
 });
