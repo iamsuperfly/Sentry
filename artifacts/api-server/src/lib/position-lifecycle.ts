@@ -14,6 +14,12 @@ export type MarketLifecycleView = {
   tradable?: boolean;
   onchainStatus?: number;
   tradingStart?: string | number | null;
+  intervalSec?: string | number | null;
+  /** On-chain / indexer resolution evidence — never invent. */
+  isResolved?: boolean;
+  isVoided?: boolean;
+  /** 0 = YES/up, 1 = NO/down when resolved. */
+  winningOutcome?: number | null;
 };
 
 export type OpenTradeLifecycleView = {
@@ -32,12 +38,14 @@ export type OpenTradeLifecycleView = {
 export function isMarketResolved(
   market: Pick<
     MarketLifecycleView,
-    "expiry" | "finalized" | "indexerStatus"
+    "expiry" | "finalized" | "indexerStatus" | "isResolved" | "isVoided" | "onchainStatus"
   >,
   nowSec = Math.floor(Date.now() / 1000),
 ): boolean {
   if (market.finalized === true) return true;
+  if (market.isResolved === true || market.isVoided === true) return true;
   if (market.indexerStatus === "Finalized") return true;
+  if (market.onchainStatus === 4 || market.onchainStatus === 5) return true;
   const expiry = parseUnixSeconds(market.expiry);
   if (expiry !== null && expiry <= nowSec) return true;
   return false;
@@ -160,4 +168,33 @@ export function classifyOpenTradeFinalization(input: {
   }
 
   return { action: "none", reason: "No finalization action." };
+}
+
+/** Map diagnostic row into lifecycle view for finalization. */
+export function marketLifecycleFromDiagnostic(m: {
+  marketId: string;
+  expiry: string | number;
+  tradingStart?: string | number | null;
+  intervalSec?: string | number | null;
+  finalized?: boolean;
+  indexerStatus?: string;
+  tradable?: boolean;
+  onchainStatus?: number;
+  isResolved?: boolean;
+  isVoided?: boolean;
+  winningOutcome?: number | null;
+}): MarketLifecycleView {
+  return {
+    marketId: m.marketId,
+    expiry: m.expiry,
+    tradingStart: m.tradingStart ?? null,
+    intervalSec: m.intervalSec ?? null,
+    finalized: m.finalized,
+    indexerStatus: m.indexerStatus,
+    tradable: m.tradable,
+    onchainStatus: m.onchainStatus,
+    isResolved: m.isResolved,
+    isVoided: m.isVoided,
+    winningOutcome: m.winningOutcome ?? null,
+  };
 }

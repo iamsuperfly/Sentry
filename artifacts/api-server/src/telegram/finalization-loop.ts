@@ -6,6 +6,8 @@
 import type { Bot } from "grammy";
 import type { AppConfig } from "../config";
 import { logger } from "../lib/logger";
+import { readDreamdexMarkets } from "../lib/dreamdex";
+import { marketLifecycleFromDiagnostic } from "../lib/position-lifecycle";
 import {
   applyMarketResolveFinalization,
   buildFinalizationTelegramText,
@@ -25,10 +27,33 @@ export function startFinalizationLoop(
   async function tick() {
     if (stopped) return;
     try {
+      // Load market snapshot once per tick for resolution evidence (winningOutcome, void).
+      let marketById = new Map<
+        string,
+        ReturnType<typeof marketLifecycleFromDiagnostic>
+      >();
+      try {
+        const snapshot = await readDreamdexMarkets(config);
+        marketById = new Map(
+          snapshot.markets.map((m) => [
+            m.marketId,
+            marketLifecycleFromDiagnostic(m),
+          ]),
+        );
+      } catch (error) {
+        logger.error(
+          {
+            err: error instanceof Error ? error.message : String(error),
+          },
+          "Finalization market snapshot failed; falling back to expiry-only",
+        );
+      }
+
       const open = await listOpenTradesForFinalization(config, { limit: 40 });
       for (const trade of open) {
         try {
-          await applyMarketResolveFinalization(config, trade, null);
+          const market = marketById.get(trade.marketId) ?? null;
+          await applyMarketResolveFinalization(config, trade, market);
         } catch (error) {
           logger.error(
             {
