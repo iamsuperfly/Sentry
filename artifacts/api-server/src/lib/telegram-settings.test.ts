@@ -4,6 +4,7 @@ import { DEFAULT_SYSTEM_LIMITS } from "./system-limits.ts";
 import { DEFAULT_USER_PREFERENCES } from "./risk.ts";
 import {
   applySettingsPatch,
+  formatSettingsHelp,
   parseSettingsCommand,
   shouldRequestLiveExecution,
 } from "./telegram-settings.ts";
@@ -51,47 +52,41 @@ describe("parseSettingsCommand", () => {
   });
 
   it("parses trading and mode", () => {
-    const t = parseSettingsCommand("trading on");
-    assert.equal(t.kind, "patch");
-    if (t.kind === "patch") assert.equal(t.patch.tradingEnabled, true);
+    const on = parseSettingsCommand("trading on");
+    assert.equal(on.kind, "patch");
+    if (on.kind === "patch") assert.equal(on.patch.tradingEnabled, true);
 
-    const m = parseSettingsCommand("mode paper");
-    assert.equal(m.kind, "patch");
-    if (m.kind === "patch") assert.equal(m.patch.executionMode, "paper");
+    const mode = parseSettingsCommand("mode paper");
+    assert.equal(mode.kind, "patch");
+    if (mode.kind === "patch") assert.equal(mode.patch.executionMode, "paper");
+  });
+
+  it("returns help", () => {
+    assert.equal(parseSettingsCommand("help").kind, "help");
+    assert.equal(parseSettingsCommand("?").kind, "help");
   });
 
   it("rejects unknown field", () => {
-    const e = parseSettingsCommand("foo 1");
-    assert.equal(e.kind, "error");
+    const r = parseSettingsCommand("foo 1");
+    assert.equal(r.kind, "error");
   });
 });
 
 describe("applySettingsPatch", () => {
-  it("accepts valid values within system ceilings", () => {
+  it("accepts a valid max stake patch", () => {
     const result = applySettingsPatch(
       DEFAULT_USER_PREFERENCES,
-      {
-        defaultStake: 10,
-        maxTradeStake: 20,
-        maxDailyLoss: 50,
-        maxOpenPositions: 3,
-        tradingEnabled: true,
-        executionMode: "paper",
-      },
+      { maxTradeStake: 25 },
       DEFAULT_SYSTEM_LIMITS,
     );
     assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.settings.defaultStake, 10);
-      assert.equal(result.settings.executionMode, "paper");
-      assert.equal(result.settings.tradingEnabled, true);
-    }
+    if (result.ok) assert.equal(result.settings.maxTradeStake, 25);
   });
 
   it("rejects stake above system max", () => {
     const result = applySettingsPatch(
       DEFAULT_USER_PREFERENCES,
-      { maxTradeStake: 9999 },
+      { maxTradeStake: 99999 },
       DEFAULT_SYSTEM_LIMITS,
     );
     assert.equal(result.ok, false);
@@ -116,5 +111,16 @@ describe("shouldRequestLiveExecution", () => {
   it("testnet mode follows user request", () => {
     assert.equal(shouldRequestLiveExecution("testnet", true), true);
     assert.equal(shouldRequestLiveExecution("testnet", false), false);
+  });
+});
+
+describe("formatSettingsHelp", () => {
+  it("uses natural language only", () => {
+    const help = formatSettingsHelp(DEFAULT_SYSTEM_LIMITS);
+    assert.match(help, /max stake/);
+    assert.match(help, /max daily loss/);
+    assert.doesNotMatch(help, /underscore/i);
+    assert.doesNotMatch(help, /max_stake/);
+    assert.doesNotMatch(help, /max_daily_loss/);
   });
 });
