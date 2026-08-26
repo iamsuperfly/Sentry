@@ -279,23 +279,21 @@ export function applySettingsPatch(
 
 export function formatSettingsHelp(system: SystemRiskLimits): string {
   return [
-    "Settings commands (amounts in tUSDC):",
+    "Settings (amounts in tUSDC):",
     "",
     "/settings — show your configuration",
-    "/settings stake <amount> — default stake per trade",
-    "/settings max stake <amount> — max stake per trade",
-    "/settings max daily loss <amount>",
-    "/settings max positions <count>",
-    "/settings profit target <amount|off>",
-    "/settings trading on|off",
-    "/settings mode paper|testnet",
+    "/settings max stake 30 — maximum amount used for one trade",
+    "/settings max daily loss 70 — maximum loss allowed per day",
+    "/settings max positions 5 — maximum active trades",
+    "/settings profit target 200 — daily profit target (or off)",
+    "/settings stake 10 — default amount for each trade",
+    "/settings trading on — enable or disable trading",
+    "/settings mode paper — paper = no on-chain orders; testnet = may trade on Shannon",
     "",
-    "Natural phrases work (e.g. max stake 30). Underscore forms still work.",
+    `System limits: stake ${system.minStake}–${system.maxStake} tUSDC, max positions ${system.maxOpenPositions}, max daily loss ${system.maxDailyLoss} tUSDC.`,
+    "Values outside these limits are rejected (not silently changed).",
     "",
-    `System ceilings: stake ${system.minStake}–${system.maxStake} tUSDC, max positions ${system.maxOpenPositions}, max daily loss ${system.maxDailyLoss} tUSDC.`,
-    "Values above ceilings are rejected (not silently reduced).",
-    "",
-    `Defaults for new users (editable): stake ${DEFAULT_USER_PREFERENCES.defaultStake}, max stake ${DEFAULT_USER_PREFERENCES.maxTradeStake}, max daily loss ${DEFAULT_USER_PREFERENCES.maxDailyLoss}, max positions ${DEFAULT_USER_PREFERENCES.maxOpenPositions}, trading off, mode ${DEFAULT_USER_PREFERENCES.executionMode}.`,
+    `Defaults for new users: stake ${DEFAULT_USER_PREFERENCES.defaultStake}, max stake ${DEFAULT_USER_PREFERENCES.maxTradeStake}, max daily loss ${DEFAULT_USER_PREFERENCES.maxDailyLoss}, max positions ${DEFAULT_USER_PREFERENCES.maxOpenPositions}, trading off, mode ${DEFAULT_USER_PREFERENCES.executionMode}.`,
   ].join("\n");
 }
 
@@ -314,14 +312,14 @@ export function formatUserSettings(input: {
     "Your trading settings",
     "",
     `Trading: ${s.tradingEnabled ? "enabled" : "disabled"}`,
-    `Execution mode: ${s.executionMode}`,
+    `Mode: ${s.executionMode === "paper" ? "paper (no on-chain orders)" : s.executionMode}`,
     `Default stake: ${s.defaultStake} tUSDC`,
-    `Max trade stake: ${s.maxTradeStake} tUSDC`,
+    `Max stake: ${s.maxTradeStake} tUSDC`,
     `Max daily loss: ${s.maxDailyLoss} tUSDC`,
     `Max open positions: ${s.maxOpenPositions}`,
     `Daily profit target: ${profit}`,
     "",
-    `System ceilings: min stake ${input.system.minStake}, max stake ${input.system.maxStake}, max positions ${input.system.maxOpenPositions}, max daily loss ${input.system.maxDailyLoss}`,
+    `System limits: min stake ${input.system.minStake}, max stake ${input.system.maxStake}, max positions ${input.system.maxOpenPositions}, max daily loss ${input.system.maxDailyLoss}`,
   ];
   if (input.openPositionCount !== undefined) {
     lines.push(`Open positions now: ${input.openPositionCount}`);

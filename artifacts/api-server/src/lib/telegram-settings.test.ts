@@ -4,6 +4,7 @@ import { DEFAULT_SYSTEM_LIMITS } from "./system-limits.ts";
 import { DEFAULT_USER_PREFERENCES } from "./risk.ts";
 import {
   applySettingsPatch,
+  formatSettingsHelp,
   parseSettingsCommand,
   shouldRequestLiveExecution,
 } from "./telegram-settings.ts";
@@ -116,5 +117,20 @@ describe("shouldRequestLiveExecution", () => {
   it("testnet mode follows user request", () => {
     assert.equal(shouldRequestLiveExecution("testnet", true), true);
     assert.equal(shouldRequestLiveExecution("testnet", false), false);
+  });
+});
+
+describe("formatSettingsHelp", () => {
+  it("uses natural language and does not expose internal aliases", () => {
+    const help = formatSettingsHelp(DEFAULT_SYSTEM_LIMITS);
+    assert.match(help, /max stake 30/);
+    assert.match(help, /max daily loss 70/);
+    assert.match(help, /max positions 5/);
+    assert.match(help, /profit target 200/);
+    assert.doesNotMatch(help, /underscore/i);
+    assert.doesNotMatch(help, /max_stake/);
+    assert.doesNotMatch(help, /max_daily_loss/);
+    assert.doesNotMatch(help, /executionMode/);
+    assert.doesNotMatch(help, /Stage \d/);
   });
 });

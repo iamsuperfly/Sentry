@@ -43,7 +43,11 @@ import {
   listActivePositionsForDisplay,
   listHistoryForDisplay,
 } from "../lib/position-display";
-import { formatTradeExecutionMessage } from "../lib/telegram-trade-format";
+import {
+  formatExecutionModeLabel,
+  formatTradeExecutionMessage,
+  formatUserFacingTradeFailure,
+} from "../lib/telegram-trade-format";
 import { startFinalizationLoop } from "./finalization-loop";
 
 const active = new Set<number>();
@@ -419,7 +423,10 @@ export function createTelegramBot(config: AppConfig): Bot {
       });
       if (!result.ok) {
         await ctx.reply(
-          `❌ Trade cycle did not complete.\n\nCode: ${result.code}\nReason: ${result.reason}`,
+          formatUserFacingTradeFailure({
+            code: result.code,
+            reason: result.reason,
+          }),
         );
         return;
       }
@@ -433,7 +440,7 @@ export function createTelegramBot(config: AppConfig): Bot {
         tradeId: result.tradeId,
         symbol: result.intentSymbol,
         direction: String(result.decision.direction ?? "n/a"),
-        status: exec.ok ? String(exec.status) : exec.code,
+        status: exec.ok ? String(exec.status) : "not submitted",
         stake: result.stake,
         limitPrice: result.decision.limitPriceHint,
         transactionHash: exec.ok ? (exec.transactionHash ?? null) : null,
@@ -443,20 +450,29 @@ export function createTelegramBot(config: AppConfig): Bot {
         explorerTxBaseUrl: config.explorerTxBaseUrl,
       });
       if (!exec.ok) {
-        const gated = exec.gated
-          ? "\n\nLive chain submit is blocked (feature gate). Intent may still be recorded."
-          : "";
+        const human = formatUserFacingTradeFailure({
+          code: exec.code,
+          reason: exec.reason,
+        });
         await ctx.reply(
-          `${tradeMsg}\nMode: ${settings.executionMode}\n\nExecution: ${exec.code}\n${exec.reason}${gated}`,
+          `${tradeMsg}\n\n${human}\n\nMode: ${formatExecutionModeLabel(settings.executionMode)}`,
           { link_preview_options: { is_disabled: true } },
         );
         return;
       }
-      await ctx.reply(`${tradeMsg}\nMode: ${settings.executionMode}`, {
+      await ctx.reply(`${tradeMsg}\nMode: ${formatExecutionModeLabel(settings.executionMode)}`, {
         link_preview_options: { is_disabled: true },
       });
     } catch (error) {
-      await ctx.reply(`❌ Trade cycle failed.\n\nReason: ${safeError(error)}`);
+      await ctx.reply(
+        [
+          "⚪ Trade could not be completed",
+          "",
+          "Something went wrong on our side. Please try again shortly.",
+          "No funds were used unless you already see a confirmed transaction.",
+        ].join("\n"),
+      );
+      logger.error({ err: safeError(error) }, "Telegram /trade failed");
     } finally {
       tradeActive.delete(ctx.from.id);
     }
@@ -466,19 +482,18 @@ export function createTelegramBot(config: AppConfig): Bot {
       [
         "DreamDEX Event Contracts bot",
         "",
-        "/start — create/resume wallet and gas funding",
+        "/start — create or resume your wallet",
         "/faucet <amount> — request tUSDC (up to 500/day UTC)",
-        "/status — wallet, balances, trading state, settings",
-        "/settings — view or change risk (e.g. max stake 30)",
-        "/trade — strategy → persist intent → gated execution",
-        "/positions — active positions only",
+        "/status — wallet, balances, and trading state",
+        "/settings — view or change limits (e.g. max stake 30)",
+        "/trade — evaluate markets and place a trade when conditions match",
+        "/positions — open positions only",
         "/history — completed, failed, or cancelled trades",
-        "/stop — disable trading (keeps history)",
-        "/fund — recover interrupted STT funding",
-        "/privatekey — export private key (auto-deletes)",
+        "/stop — disable trading (history is kept)",
+        "/fund — recover interrupted gas funding",
+        "/privatekey — export private key (message auto-deletes)",
         "",
-        "Paper mode never requests live submit. Use /settings mode paper|testnet.",
-        "Chain submits still require ENABLE_LIVE_EXECUTION=true on the server.",
+        "Paper mode never sends on-chain orders. Switch with /settings mode paper|testnet.",
       ].join("\n"),
     ),
   );
@@ -563,7 +578,9 @@ export function createTelegramBot(config: AppConfig): Bot {
         config.systemLimits,
       );
       if (!applied.ok) {
-        await ctx.reply(`❌ ${applied.code}\n${applied.reason}`);
+        await ctx.reply(
+          `❌ That setting could not be saved.\n\n${applied.reason}\n\nUse /settings help for allowed values.`,
+        );
         return;
       }
       const saved = await saveUserSettingsForTelegram(
@@ -596,7 +613,6 @@ export function createTelegramBot(config: AppConfig): Bot {
         balances(config, wallet.address),
         getFaucetAllowance(config, wallet.user_id),
         getUserSettingsForTelegram(config, identity),
-        // Same expiry-aware definition as /positions
         getActiveOpenPositionCount(config, wallet.user_id),
         getRealizedPnlToday(config, wallet.user_id),
       ]);
@@ -610,14 +626,13 @@ export function createTelegramBot(config: AppConfig): Bot {
           `tUSDC: ${current.tusdc}`,
           "",
           `Trading: ${settings.tradingEnabled ? "enabled" : "disabled"}`,
-          `Mode: ${settings.executionMode}`,
+          `Mode: ${formatExecutionModeLabel(settings.executionMode)}`,
           `Default stake: ${settings.defaultStake} tUSDC`,
           `Max stake: ${settings.maxTradeStake} tUSDC`,
           `Max daily loss: ${settings.maxDailyLoss} tUSDC`,
           `Max open positions: ${settings.maxOpenPositions}`,
           `Open positions: ${openCount}`,
           `PnL today (UTC): ${pnl} tUSDC`,
-          `Live execution env: ${config.enableLiveExecution ? "ON" : "OFF"}`,
           "",
           `Faucet today: ${allowance.consumed} / 500 tUSDC`,
           `Remaining: ${allowance.remaining} tUSDC`,

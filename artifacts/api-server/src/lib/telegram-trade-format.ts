@@ -224,7 +224,6 @@ export function classifyFinalization(input: {
     if (input.pnl < 0) return "loss";
   }
   if (input.outcome === "up" || input.outcome === "down") {
-    // Without direction context we only know a side resolved; caller should pass pnl.
     return "settled";
   }
   return "settled";
@@ -294,4 +293,115 @@ export function formatFinalizationMessage(input: {
   if (tx) lines.push(tx);
   if (input.errorMessage) lines.push(`Reason: ${input.errorMessage}`);
   return lines.join("\n");
+}
+
+/**
+ * Map internal trade-cycle / risk codes to concise user-facing Telegram text.
+ * Never expose stage numbers, DB field names, or implementation codes.
+ */
+export function formatUserFacingTradeFailure(input: {
+  code: string;
+  reason?: string | null;
+}): string {
+  const code = (input.code || "").toLowerCase();
+  switch (code) {
+    case "no_enter_decision":
+      return [
+        "⚪ No trade placed",
+        "",
+        "No market currently meets the strategy's conditions.",
+        "No funds were used.",
+      ].join("\n");
+    case "trading_disabled":
+      return [
+        "⚪ Trading is turned off",
+        "",
+        "Enable it with /settings trading on, or review /settings.",
+      ].join("\n");
+    case "markets_unavailable":
+      return [
+        "⚪ Markets unavailable",
+        "",
+        "Could not load market data right now. Try again shortly.",
+        "No funds were used.",
+      ].join("\n");
+    case "live_execution_disabled":
+      return [
+        "⚪ Order not submitted on-chain",
+        "",
+        "Live trading is not enabled on the server.",
+        "Your trade intent may still be recorded.",
+      ].join("\n");
+    case "stake_exceeds_user_max":
+    case "stake_above_system_max":
+    case "stake_below_system_min":
+      return [
+        "⚪ Stake not allowed",
+        "",
+        "The requested stake is outside your limits. Check /settings.",
+        "No funds were used.",
+      ].join("\n");
+    case "user_max_open_positions":
+    case "system_max_open_positions":
+      return [
+        "⚪ Position limit reached",
+        "",
+        "You already have the maximum number of open trades.",
+        "Close or wait for positions to finish, or raise the limit in /settings.",
+        "No funds were used.",
+      ].join("\n");
+    case "max_daily_loss":
+    case "daily_loss_limit":
+      return [
+        "⚪ Daily loss limit reached",
+        "",
+        "No new trades until the next UTC day, or adjust /settings max daily loss.",
+        "No funds were used.",
+      ].join("\n");
+    case "profit_target_reached":
+    case "daily_profit_target":
+      return [
+        "⚪ Daily profit target reached",
+        "",
+        "New trades are paused until the next UTC day.",
+        "No funds were used.",
+      ].join("\n");
+    case "insufficient_collateral":
+    case "insufficient_balance":
+      return [
+        "⚪ Insufficient tUSDC",
+        "",
+        "Add funds with /faucet or check /status.",
+        "No trade was placed.",
+      ].join("\n");
+    case "unauthenticated":
+      return [
+        "⚪ Wallet not ready",
+        "",
+        "Use /start first to create your wallet.",
+      ].join("\n");
+    case "persist_failed":
+    case "missing_trade_id":
+    case "stale_intent_cleanup_failed":
+      return [
+        "⚪ Could not record the trade",
+        "",
+        "Please try again in a moment. No on-chain order was sent.",
+      ].join("\n");
+    default:
+      return [
+        "⚪ No trade placed",
+        "",
+        "The trade could not be completed.",
+        "No funds were used unless an on-chain transaction already confirmed.",
+        "Check /status and try again, or use /help.",
+      ].join("\n");
+  }
+}
+
+/** Human label for execution mode (never show raw internal field names alone). */
+export function formatExecutionModeLabel(mode: string): string {
+  if (mode === "paper") return "paper (no on-chain orders)";
+  if (mode === "testnet") return "testnet";
+  return mode;
 }
