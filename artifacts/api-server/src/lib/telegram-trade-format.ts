@@ -3,6 +3,8 @@
  * No network, no bot side effects — safe to unit test.
  */
 
+import { resolveMarketDurationSeconds } from "./decision-market-meta.ts";
+
 export function parseUnixSeconds(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined) return null;
   const n = typeof raw === "number" ? raw : Number(raw);
@@ -17,12 +19,13 @@ export function parseUnixSeconds(raw: string | number | null | undefined): numbe
 export function marketDurationSeconds(
   tradingStart: string | number | null | undefined,
   expiry: string | number | null | undefined,
+  intervalSec?: string | number | null,
 ): number | null {
-  const start = parseUnixSeconds(tradingStart);
-  const end = parseUnixSeconds(expiry);
-  if (start === null || end === null) return null;
-  const duration = end - start;
-  return duration > 0 && Number.isFinite(duration) ? duration : null;
+  return resolveMarketDurationSeconds({
+    intervalSec,
+    tradingStart,
+    expiry,
+  });
 }
 
 /**
@@ -99,6 +102,7 @@ export type DisplayTrade = {
   /** Unix seconds or ms string from market metadata / decision. */
   marketExpiry?: string | number | null;
   tradingStart?: string | number | null;
+  intervalSec?: string | number | null;
   outcome?: string | null;
   pnl?: number | null;
 };
@@ -115,7 +119,11 @@ export function formatPositionBlock(
   explorerTxBaseUrl: string,
   nowSec = Math.floor(Date.now() / 1000),
 ): string {
-  const duration = marketDurationSeconds(trade.tradingStart, trade.marketExpiry);
+  const duration = marketDurationSeconds(
+    trade.tradingStart,
+    trade.marketExpiry,
+    trade.intervalSec,
+  );
   const timeframe = formatTimeframe(duration);
   const left = secondsUntilExpiry(trade.marketExpiry, nowSec);
   const remaining =
@@ -159,11 +167,16 @@ export function formatTradeExecutionMessage(input: {
   transactionHash: string | null;
   tradingStart?: string | number | null;
   marketExpiry?: string | number | null;
+  intervalSec?: string | number | null;
   explorerTxBaseUrl: string;
   nowSec?: number;
 }): string {
   const nowSec = input.nowSec ?? Math.floor(Date.now() / 1000);
-  const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry);
+  const duration = marketDurationSeconds(
+    input.tradingStart,
+    input.marketExpiry,
+    input.intervalSec,
+  );
   const timeframe = formatTimeframe(duration);
   const left = secondsUntilExpiry(input.marketExpiry, nowSec);
   const remaining =
@@ -226,12 +239,17 @@ export function formatFinalizationMessage(input: {
   pnl?: number | null;
   tradingStart?: string | number | null;
   marketExpiry?: string | number | null;
+  intervalSec?: string | number | null;
   transactionHash?: string | null;
   errorMessage?: string | null;
   explorerTxBaseUrl: string;
 }): string {
   const kind = classifyFinalization(input);
-  const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry);
+  const duration = marketDurationSeconds(
+    input.tradingStart,
+    input.marketExpiry,
+    input.intervalSec,
+  );
   const timeframe = formatTimeframe(duration);
   const header =
     kind === "win"

@@ -10,6 +10,7 @@
 
 import type { AppConfig } from "../config.ts";
 import type { DreamdexDiagnostic } from "./dreamdex.ts";
+import { attachMarketWindowMeta } from "./decision-market-meta.ts";
 import type { LiveSubmitResult } from "./live-execution.ts";
 import type { StrategyDecision, StrategyRunResult } from "./strategy.ts";
 import type { TelegramIdentity } from "./trade-persistence.ts";
@@ -125,6 +126,8 @@ export function selectEnterDecision(
  * - Identity comes only from Telegram (`identity.id`).
  * - Wallet + internal user_id are resolved inside persist/execute helpers.
  * - liveExecutionRequested is caller-controlled; ENABLE_LIVE_EXECUTION still gates chain writes.
+ * - Market window metadata (tradingStart / intervalSec) is attached before persist
+ *   from DreamDEX BinaryMarket fields — never inferred from trade placement time.
  */
 export async function runTelegramTradeCycle(input: {
   config: AppConfig;
@@ -158,6 +161,7 @@ export async function runTelegramTradeCycle(input: {
     evaluate: provided.evaluate ?? defaults!.evaluate,
     persistIntent: provided.persistIntent ?? defaults!.persistIntent,
     executePersisted: provided.executePersisted ?? defaults!.executePersisted,
+    expireStalePending: provided.expireStalePending ?? defaults?.expireStalePending,
   };
 
   let snapshot: DreamdexDiagnostic;
@@ -176,14 +180,17 @@ export async function runTelegramTradeCycle(input: {
   }
 
   const strategy = deps.evaluate(snapshot.markets);
-  const decision = selectEnterDecision(strategy);
-  if (!decision) {
+  const selected = selectEnterDecision(strategy);
+  if (!selected) {
     return {
       ok: false,
       code: "no_enter_decision",
       reason: "Stage 2 produced no enter decision for the current markets.",
     };
   }
+
+  // Persist real market window so Telegram can show 5m / 30m / 1h without guessing.
+  const decision = attachMarketWindowMeta(selected, snapshot.markets);
 
   if (deps.expireStalePending) {
     try {
