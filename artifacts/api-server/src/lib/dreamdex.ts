@@ -36,12 +36,26 @@ export type DreamdexMarketDiagnostic = {
   question: string;
   oracleQuestion: string | null;
   strike: string;
+  /** Indexer BinaryMarket.tradingStart (unix seconds string). */
   tradingStart: string;
+  /** Indexer BinaryMarket.expiry (unix seconds string). */
   expiry: string;
+  /** SDK-derived interval when present (seconds string). */
+  intervalSec: string | null;
   indexerStatus: BinaryMarket["status"];
   onchainStatus: number;
   tradable: boolean;
   finalized: boolean;
+  /** On-chain: oracle resolved to a concrete winner. */
+  isResolved: boolean;
+  /** On-chain: voided (0.5 redeem both sides). */
+  isVoided: boolean;
+  /**
+   * Winning outcome: 0 = YES, 1 = NO.
+   * Prefer on-chain when isResolved; else indexer BinaryMarket.winningOutcome.
+   * null when not yet known — never invent.
+   */
+  winningOutcome: number | null;
   collateral: string;
   decimals: number;
   book: DreamdexBook;
@@ -80,6 +94,23 @@ function serializeMarket(
   onchain: MarketOnchain,
   book: BinaryOrderBook,
 ): DreamdexMarketDiagnostic {
+  const intervalSec =
+    market.intervalSec !== undefined && market.intervalSec !== null
+      ? String(market.intervalSec)
+      : null;
+
+  // Prefer explicit on-chain resolution flags; fall back to indexer winningOutcome.
+  let winningOutcome: number | null = null;
+  if (onchain.isResolved) {
+    winningOutcome = Number(onchain.winningOutcome);
+  } else if (
+    market.winningOutcome !== null &&
+    market.winningOutcome !== undefined &&
+    Number.isFinite(Number(market.winningOutcome))
+  ) {
+    winningOutcome = Number(market.winningOutcome);
+  }
+
   return {
     marketId: market.marketId,
     marketAddress: market.marketAddress,
@@ -91,12 +122,16 @@ function serializeMarket(
     strike: market.strike,
     tradingStart: market.tradingStart,
     expiry: market.expiry,
+    intervalSec,
     indexerStatus: market.status,
     onchainStatus: onchain.status,
     tradable:
       market.status === "Trading" &&
       onchain.status === ONCHAIN_TRADING_STATUS,
     finalized: onchain.finalized,
+    isResolved: onchain.isResolved,
+    isVoided: onchain.isVoided,
+    winningOutcome,
     collateral: onchain.collateral,
     decimals: onchain.decimals,
     book: serializeBook(book),
