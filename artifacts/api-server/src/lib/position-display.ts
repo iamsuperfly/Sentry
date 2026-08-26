@@ -14,15 +14,17 @@ import { OPEN_TRADE_STATUSES, TERMINAL_TRADE_STATUSES } from "./trade-state.ts";
 function decisionMeta(decision: unknown): {
   marketExpiry: string | number | null;
   tradingStart: string | number | null;
+  intervalSec: string | number | null;
 } {
   if (!decision || typeof decision !== "object") {
-    return { marketExpiry: null, tradingStart: null };
+    return { marketExpiry: null, tradingStart: null, intervalSec: null };
   }
   const d = decision as Record<string, unknown>;
   return {
     marketExpiry: (d.expiry as string | number | null | undefined) ?? null,
     tradingStart:
       (d.tradingStart as string | number | null | undefined) ?? null,
+    intervalSec: (d.intervalSec as string | number | null | undefined) ?? null,
   };
 }
 
@@ -46,6 +48,7 @@ function mapRow(row: Record<string, unknown>): DisplayTrade {
     errorMessage: (row.error_message as string | null) ?? null,
     marketExpiry: meta.marketExpiry,
     tradingStart: meta.tradingStart,
+    intervalSec: meta.intervalSec,
     outcome: (row.outcome as string | null) ?? null,
     pnl: num(row.pnl_usdso),
   };
