@@ -43,7 +43,11 @@ import {
   listActivePositionsForDisplay,
   listHistoryForDisplay,
 } from "../lib/position-display";
-import { formatTradeExecutionMessage } from "../lib/telegram-trade-format";
+import {
+  formatExecutionModeLabel,
+  formatTradeExecutionMessage,
+  formatUserFacingTradeFailure,
+} from "../lib/telegram-trade-format";
 import { startFinalizationLoop } from "./finalization-loop";
 
 const active = new Set<number>();
