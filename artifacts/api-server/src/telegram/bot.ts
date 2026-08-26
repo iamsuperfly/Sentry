@@ -32,11 +32,11 @@ import {
 } from "../lib/telegram-settings";
 import {
   disableTradingForTelegram,
-  getOpenPositionCount,
   getRealizedPnlToday,
   getUserSettingsForTelegram,
   saveUserSettingsForTelegram,
 } from "../lib/trade-persistence";
+import { getActiveOpenPositionCount } from "../lib/active-positions";
 import {
   formatHistoryMessage,
   formatPositionsMessage,
@@ -424,6 +424,11 @@ export function createTelegramBot(config: AppConfig): Bot {
         return;
       }
       const exec = result.execution;
+      const decisionMeta = result.decision as {
+        tradingStart?: string;
+        intervalSec?: string | null;
+        expiry?: string;
+      };
       const tradeMsg = formatTradeExecutionMessage({
         tradeId: result.tradeId,
         symbol: result.intentSymbol,
@@ -432,8 +437,9 @@ export function createTelegramBot(config: AppConfig): Bot {
         stake: result.stake,
         limitPrice: result.decision.limitPriceHint,
         transactionHash: exec.ok ? (exec.transactionHash ?? null) : null,
-        tradingStart: (result.decision as { tradingStart?: string }).tradingStart,
+        tradingStart: decisionMeta.tradingStart,
         marketExpiry: result.decision.expiry,
+        intervalSec: decisionMeta.intervalSec,
         explorerTxBaseUrl: config.explorerTxBaseUrl,
       });
       if (!exec.ok) {
@@ -538,7 +544,7 @@ export function createTelegramBot(config: AppConfig): Bot {
       const current = await getUserSettingsForTelegram(config, identity);
       if (parsed.kind === "show") {
         const [openCount, pnl] = await Promise.all([
-          getOpenPositionCount(config, current.userId),
+          getActiveOpenPositionCount(config, current.userId),
           getRealizedPnlToday(config, current.userId),
         ]);
         await ctx.reply(
@@ -590,7 +596,8 @@ export function createTelegramBot(config: AppConfig): Bot {
         balances(config, wallet.address),
         getFaucetAllowance(config, wallet.user_id),
         getUserSettingsForTelegram(config, identity),
-        getOpenPositionCount(config, wallet.user_id),
+        // Same expiry-aware definition as /positions
+        getActiveOpenPositionCount(config, wallet.user_id),
         getRealizedPnlToday(config, wallet.user_id),
       ]);
       await ctx.reply(
