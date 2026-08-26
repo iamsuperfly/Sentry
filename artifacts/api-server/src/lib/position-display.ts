@@ -136,18 +136,13 @@ export function formatHistoryMessage(
   return trades
     .map((trade, index) => {
       const body = formatPositionBlock(trade, explorerTxBaseUrl);
-      const pnl =
-        trade.pnl === null || trade.pnl === undefined
-          ? null
-          : `PnL: ${trade.pnl > 0 ? "+" : ""}${trade.pnl} tUSDC`;
-      const outcome = trade.outcome ? `Outcome: ${trade.outcome}` : null;
-      return ["${index + 1}. " + body.split("\n")[0], ...body.split("\n").slice(1), outcome, pnl]
-        .filter(Boolean)
-        .join("\n")
-        .replace(
-          `${index + 1}. ${body.split("\n")[0]}`,
-          `${index + 1}. ${body.split("\n")[0]}`,
-        );
+      const extra: string[] = [];
+      if (trade.outcome) extra.push(`Outcome: ${trade.outcome}`);
+      if (trade.pnl !== null && trade.pnl !== undefined) {
+        const sign = trade.pnl > 0 ? "+" : "";
+        extra.push(`PnL: ${sign}${trade.pnl} tUSDC`);
+      }
+      return [`${index + 1}. ${body}`, ...extra].join("\n");
     })
     .join("\n\n");
 }
