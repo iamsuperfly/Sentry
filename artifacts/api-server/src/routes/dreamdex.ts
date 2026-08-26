@@ -94,6 +94,7 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
         maxDailyLoss?: number;
         maxOpenPositions?: number;
         dailyProfitTarget?: number | null;
+        executionMode?: "paper" | "testnet";
         realizedPnlToday?: number;
         openPositionCount?: number;
         collateralBalance?: number;
@@ -125,6 +126,8 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
         body.settings?.dailyProfitTarget === undefined
           ? DEFAULT_USER_PREFERENCES.dailyProfitTarget
           : body.settings.dailyProfitTarget,
+      executionMode:
+        body.settings?.executionMode ?? DEFAULT_USER_PREFERENCES.executionMode,
       realizedPnlToday: body.settings?.realizedPnlToday ?? 0,
       openPositionCount: body.settings?.openPositionCount ?? 0,
       collateralBalance: body.settings?.collateralBalance ?? 0,
@@ -182,6 +185,7 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
       maxDailyLoss?: number;
       maxOpenPositions?: number;
       dailyProfitTarget?: number | null;
+      executionMode?: "paper" | "testnet";
     };
 
     const result = validateUserSettings(
@@ -197,6 +201,7 @@ export function createDreamdexRouter(config: AppConfig): IRouter {
           body.dailyProfitTarget === undefined
             ? null
             : body.dailyProfitTarget,
+        executionMode: body.executionMode ?? DEFAULT_USER_PREFERENCES.executionMode,
       },
       config.systemLimits,
     );
