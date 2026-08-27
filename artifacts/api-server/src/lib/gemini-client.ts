@@ -105,7 +105,8 @@ const RESPONSE_SCHEMA = {
           direction: { type: "string", enum: ["UP", "DOWN"] },
           confidence: { type: "number" },
           reason: { type: "string" },
-          stake: { type: ["number", "null"] },
+          // OpenAPI/proto Schema: single type + nullable (not JSON Schema type arrays).
+          stake: { type: "number", nullable: true },
         },
         required: ["marketId", "direction", "confidence", "reason"],
       },
@@ -145,6 +146,24 @@ function parseDecisions(raw: unknown): GeminiCandidateDecision[] | null {
     });
   }
   return out;
+}
+
+/** Extract a short, non-secret detail from a Gemini error JSON/text body. */
+function truncateGeminiErrorBody(raw: string, maxLen: number): string {
+  const cleaned = raw.replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  try {
+    const parsed = JSON.parse(raw) as {
+      error?: { message?: string; status?: string; code?: number };
+    };
+    const msg = parsed.error?.message?.trim();
+    if (msg) {
+      return msg.length > maxLen ? `${msg.slice(0, maxLen)}…` : msg;
+    }
+  } catch {
+    // not JSON — fall through
+  }
+  return cleaned.length > maxLen ? `${cleaned.slice(0, maxLen)}…` : cleaned;
 }
 
 export async function callGeminiMarketDecisions(input: {
@@ -228,64 +247,116 @@ export async function callGeminiMarketDecisions(input: {
     const latencyMs = Date.now() - started;
     const text = await res.text();
     if (!res.ok) {
+      const safeDetail = truncateGeminiErrorBody(text, 280);
       console.warn(
-        { provider: "gemini", model, latencyMs, status: res.status },
+        {
+          provider: "gemini",
+          model,
+          latencyMs,
+          status: res.status,
+          detail: safeDetail || undefined,
+        },
         "AI request failed",
       );
       return {
         ok: false,
         code: "gemini_http_error",
-        reason: `Gemini HTTP ${res.status}.`,
+        reason: safeDetail
+          ? `Gemini HTTP ${res.status}: ${safeDetail}`
+          : `Gemini HTTP ${res.status}.`,
         audit: {
           ...baseAudit,
           latencyMs,
           ok: false,
           decisionsReturned: 0,
           errorCode: "gemini_http_error",
-          errorMessage: `HTTP ${res.status}`,
+          errorMessage: safeDetail
+            ? `HTTP ${res.status}: ${safeDetail}`
+            : `HTTP ${res.status}`,
         },
       };
     }
 
     let parsedJson: unknown;
     try {
-      const outer = JSON.parse(text) as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-      const partText = outer.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!partText) throw new Error("empty candidate");
-      parsedJson = JSON.parse(partText);
+      parsedJson = JSON.parse(text);
     } catch {
       console.warn(
         { provider: "gemini", model, latencyMs },
-        "AI malformed response",
+        "AI response was not JSON",
       );
       return {
         ok: false,
-        code: "gemini_malformed_response",
-        reason: "Gemini returned unparseable structured output.",
+        code: "gemini_invalid_response",
+        reason: "Gemini response was not valid JSON.",
         audit: {
           ...baseAudit,
           latencyMs,
           ok: false,
           decisionsReturned: 0,
-          errorCode: "gemini_malformed_response",
+          errorCode: "gemini_invalid_response",
+          errorMessage: "Response not JSON",
         },
       };
     }
 
-    const decisions = parseDecisions(parsedJson);
-    if (decisions === null) {
+    const candidates = (parsedJson as { candidates?: unknown[] }).candidates;
+    const first =
+      Array.isArray(candidates) && candidates.length > 0 ? candidates[0] : null;
+    const parts =
+      first &&
+      typeof first === "object" &&
+      (first as { content?: { parts?: unknown } }).content?.parts;
+    const textPart =
+      Array.isArray(parts) && parts.length > 0
+        ? (parts[0] as { text?: string }).text
+        : undefined;
+
+    if (typeof textPart !== "string" || !textPart.trim()) {
       return {
         ok: false,
-        code: "gemini_invalid_schema",
-        reason: "Gemini JSON did not match expected decisions schema.",
+        code: "gemini_empty_response",
+        reason: "Gemini returned no text content.",
         audit: {
           ...baseAudit,
           latencyMs,
           ok: false,
           decisionsReturned: 0,
-          errorCode: "gemini_invalid_schema",
+          errorCode: "gemini_empty_response",
+        },
+      };
+    }
+
+    let structured: unknown;
+    try {
+      structured = JSON.parse(textPart);
+    } catch {
+      return {
+        ok: false,
+        code: "gemini_invalid_json",
+        reason: "Gemini text part was not valid JSON.",
+        audit: {
+          ...baseAudit,
+          latencyMs,
+          ok: false,
+          decisionsReturned: 0,
+          errorCode: "gemini_invalid_json",
+        },
+      };
+    }
+
+    const decisions = parseDecisions(structured);
+    if (decisions === null) {
+      return {
+        ok: false,
+        code: "gemini_schema_mismatch",
+        reason: "Gemini JSON did not match expected decisions shape.",
+        audit: {
+          ...baseAudit,
+          latencyMs,
+          ok: false,
+          decisionsReturned: 0,
+          errorCode: "gemini_schema_mismatch",
         },
       };
     }
@@ -316,20 +387,21 @@ export async function callGeminiMarketDecisions(input: {
     const latencyMs = Date.now() - started;
     const aborted = error instanceof Error && error.name === "AbortError";
     const code = aborted ? "gemini_timeout" : "gemini_network_error";
-    console.warn(
-      { provider: "gemini", model, latencyMs, code },
-      "AI request error",
-    );
+    const reason = aborted
+      ? "Gemini request timed out."
+      : "Gemini network error.";
+    console.warn({ provider: "gemini", model, latencyMs, code }, reason);
     return {
       ok: false,
       code,
-      reason: aborted ? "Gemini request timed out." : "Gemini network error.",
+      reason,
       audit: {
         ...baseAudit,
         latencyMs,
         ok: false,
         decisionsReturned: 0,
         errorCode: code,
+        errorMessage: reason,
       },
     };
   } finally {
