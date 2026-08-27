@@ -422,11 +422,14 @@ export function createTelegramBot(config: AppConfig): Bot {
         stake: settings.defaultStake,
       });
       if (!result.ok) {
+        const scan = result.marketScan
+          ? `\n\nMarkets found: ${result.marketScan.discovered} · tradable: ${result.marketScan.tradable}`
+          : "";
         await ctx.reply(
           formatUserFacingTradeFailure({
             code: result.code,
             reason: result.reason,
-          }),
+          }) + scan,
         );
         return;
       }
@@ -449,20 +452,24 @@ export function createTelegramBot(config: AppConfig): Bot {
         intervalSec: decisionMeta.intervalSec,
         explorerTxBaseUrl: config.explorerTxBaseUrl,
       });
+      const marketsLine = `Markets found: ${result.marketScan.discovered} · tradable: ${result.marketScan.tradable}`;
       if (!exec.ok) {
         const human = formatUserFacingTradeFailure({
           code: exec.code,
           reason: exec.reason,
         });
         await ctx.reply(
-          `${tradeMsg}\n\n${human}\n\nMode: ${formatExecutionModeLabel(settings.executionMode)}`,
+          `${tradeMsg}\n${marketsLine}\n\n${human}\n\nMode: ${formatExecutionModeLabel(settings.executionMode)}`,
           { link_preview_options: { is_disabled: true } },
         );
         return;
       }
-      await ctx.reply(`${tradeMsg}\nMode: ${formatExecutionModeLabel(settings.executionMode)}`, {
-        link_preview_options: { is_disabled: true },
-      });
+      await ctx.reply(
+        `${tradeMsg}\n${marketsLine}\nMode: ${formatExecutionModeLabel(settings.executionMode)}`,
+        {
+          link_preview_options: { is_disabled: true },
+        },
+      );
     } catch (error) {
       await ctx.reply(
         [
@@ -513,7 +520,7 @@ export function createTelegramBot(config: AppConfig): Bot {
     try {
       if (!ctx.from) return;
       const userId = await ensureUser(config, ctx.from);
-      const history = await listHistoryForDisplay(config, userId);
+      const history = await listHistoryForDisplay(config, userId, 5);
       await ctx.reply(formatHistoryMessage(history, config.explorerTxBaseUrl), {
         link_preview_options: { is_disabled: true },
       });

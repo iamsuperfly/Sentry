@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   classifyFinalization,
+  estimateUnrealizedPnl,
   explorerTxUrl,
   formatExecutionModeLabel,
   formatFinalizationMessage,
+  formatHistoryBlock,
   formatRemaining,
   formatTimeframe,
+  formatPositionBlock,
   formatUserFacingTradeFailure,
   marketDurationSeconds,
   secondsUntilExpiry,
@@ -242,5 +245,86 @@ describe("formatUserFacingTradeFailure", () => {
     assert.match(formatExecutionModeLabel("paper"), /paper/);
     assert.match(formatExecutionModeLabel("paper"), /no on-chain/);
     assert.equal(formatExecutionModeLabel("testnet"), "testnet");
+  });
+});
+
+describe("position and history display", () => {
+  const baseTrade = {
+    id: "t1",
+    symbol: "BTC",
+    direction: "up",
+    status: "filled",
+    stake: 10,
+    limitPrice: 0.48,
+    filledContracts: 20,
+    contracts: 20,
+    transactionHash: "0xabc",
+    errorMessage: null as string | null,
+    tradingStart: 1_700_000_000,
+    marketExpiry: 1_700_000_300,
+    intervalSec: null as string | null,
+    outcome: null as string | null,
+    pnl: null as number | null,
+    markPrice: null as number | null,
+  };
+
+  it("formatPositionBlock shows order status, time left, contracts", () => {
+    const text = formatPositionBlock(
+      baseTrade,
+      "https://shannon-explorer.somnia.network/tx",
+      1_700_000_100,
+    );
+    assert.match(text, /Order:/);
+    assert.match(text, /filled \(position open until market resolves\)/);
+    assert.match(text, /Time left:/);
+    assert.match(text, /Contracts: 20 \/ 20/);
+    assert.match(text, /Unrealized: n\/a \(no live mark\)/);
+    assert.match(text, /shannon-explorer/);
+  });
+
+  it("estimateUnrealizedPnl returns null without mark; computes when mark present", () => {
+    assert.equal(
+      estimateUnrealizedPnl({
+        direction: "up",
+        stake: 10,
+        entryPrice: 0.5,
+        filledContracts: 20,
+        markPrice: null,
+      }),
+      null,
+    );
+    const pnl = estimateUnrealizedPnl({
+      direction: "up",
+      stake: 10,
+      entryPrice: 0.4,
+      filledContracts: 10,
+      markPrice: 0.55,
+    });
+    assert.equal(pnl, 1.5);
+  });
+
+  it("formatHistoryBlock shows WIN/LOSS and PnL only when known", () => {
+    const withPnl = formatHistoryBlock(
+      {
+        ...baseTrade,
+        status: "settled",
+        pnl: 8,
+        outcome: "up",
+      },
+      "https://shannon-explorer.somnia.network/tx",
+    );
+    assert.match(withPnl, /Result: WIN/);
+    assert.match(withPnl, /PnL: \+8/);
+    assert.match(withPnl, /Payout \(if claimed\): 18/);
+
+    const noPnl = formatHistoryBlock(
+      {
+        ...baseTrade,
+        status: "settled",
+        pnl: null,
+      },
+      "https://shannon-explorer.somnia.network/tx",
+    );
+    assert.match(noPnl, /PnL: n\/a \(not reconstructed\)/);
   });
 });

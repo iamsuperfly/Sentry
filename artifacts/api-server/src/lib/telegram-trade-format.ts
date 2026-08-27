@@ -9,13 +9,9 @@ export function parseUnixSeconds(raw: string | number | null | undefined): numbe
   if (raw === null || raw === undefined) return null;
   const n = typeof raw === "number" ? raw : Number(raw);
   if (!Number.isFinite(n)) return null;
-  // ms timestamps are ~1e12+; seconds are ~1e9.
   return n >= 1e12 ? n / 1000 : n;
 }
 
-/**
- * Market window length from tradingStart → expiry (actual metadata).
- */
 export function marketDurationSeconds(
   tradingStart: string | number | null | undefined,
   expiry: string | number | null | undefined,
@@ -28,10 +24,6 @@ export function marketDurationSeconds(
   });
 }
 
-/**
- * Format duration seconds as product-style timeframe labels.
- * 5 → "5m", 30 → "30m", 60 → "1h", 90 → "1h 30m".
- */
 export function formatTimeframe(durationSec: number | null | undefined): string {
   if (durationSec === null || durationSec === undefined || !Number.isFinite(durationSec) || durationSec <= 0) {
     return "n/a";
@@ -40,7 +32,6 @@ export function formatTimeframe(durationSec: number | null | undefined): string 
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-
   if (hours > 0 && minutes === 0 && seconds === 0) return `${hours}h`;
   if (hours > 0 && minutes > 0 && seconds === 0) return `${hours}h ${minutes}m`;
   if (hours > 0) return `${hours}h ${minutes}m`;
@@ -49,9 +40,6 @@ export function formatTimeframe(durationSec: number | null | undefined): string 
   return `${seconds}s`;
 }
 
-/**
- * Countdown until market resolution. Negative/zero → already resolved.
- */
 export function secondsUntilExpiry(
   expiry: string | number | null | undefined,
   nowSec = Math.floor(Date.now() / 1000),
@@ -99,12 +87,12 @@ export type DisplayTrade = {
   contracts: number | null;
   transactionHash: string | null;
   errorMessage: string | null;
-  /** Unix seconds or ms string from market metadata / decision. */
   marketExpiry?: string | number | null;
   tradingStart?: string | number | null;
   intervalSec?: string | number | null;
   outcome?: string | null;
   pnl?: number | null;
+  markPrice?: number | null;
 };
 
 function directionLabel(direction: string): string {
@@ -114,46 +102,143 @@ function directionLabel(direction: string): string {
   return direction.toUpperCase();
 }
 
+export function formatOrderStatusLabel(status: string): string {
+  const s = status.toLowerCase();
+  switch (s) {
+    case "pending":
+      return "pending (intent recorded, not yet on-chain)";
+    case "submitted":
+      return "submitted (order sent on-chain)";
+    case "partially_filled":
+      return "partially filled";
+    case "filled":
+      return "filled (position open until market resolves)";
+    case "cancelled":
+      return "cancelled";
+    case "settled":
+      return "settled (market resolved; payout may still need claim)";
+    case "redeemed":
+      return "redeemed (payout claimed to wallet)";
+    case "failed":
+      return "failed";
+    default:
+      return status;
+  }
+}
+
+export function estimateUnrealizedPnl(input: {
+  direction: string;
+  stake: number;
+  entryPrice: number | null | undefined;
+  filledContracts: number | null | undefined;
+  markPrice: number | null | undefined;
+}): number | null {
+  const entry = input.entryPrice;
+  const mark = input.markPrice;
+  const contracts = input.filledContracts;
+  if (
+    entry === null || entry === undefined || !Number.isFinite(entry) || entry <= 0 ||
+    mark === null || mark === undefined || !Number.isFinite(mark) ||
+    contracts === null || contracts === undefined || !Number.isFinite(contracts) || contracts <= 0
+  ) {
+    return null;
+  }
+  const d = input.direction.toLowerCase();
+  let positionMark: number;
+  if (d === "up" || d === "yes") positionMark = mark;
+  else if (d === "down" || d === "no") positionMark = 1 - mark;
+  else return null;
+  const pnl = contracts * (positionMark - entry);
+  return Number.isFinite(pnl) ? Math.round(pnl * 1e6) / 1e6 : null;
+}
+
 export function formatPositionBlock(
   trade: DisplayTrade,
   explorerTxBaseUrl: string,
   nowSec = Math.floor(Date.now() / 1000),
 ): string {
-  const duration = marketDurationSeconds(
-    trade.tradingStart,
-    trade.marketExpiry,
-    trade.intervalSec,
-  );
+  const duration = marketDurationSeconds(trade.tradingStart, trade.marketExpiry, trade.intervalSec);
   const timeframe = formatTimeframe(duration);
   const left = secondsUntilExpiry(trade.marketExpiry, nowSec);
   const remaining =
-    left === null
-      ? "n/a"
-      : left <= 0
-        ? "resolved"
-        : formatRemaining(left);
+    left === null ? "n/a" : left <= 0 ? "market window ended" : formatRemaining(left);
   const price =
-    trade.limitPrice === null || trade.limitPrice === undefined
-      ? "n/a"
-      : String(trade.limitPrice);
+    trade.limitPrice === null || trade.limitPrice === undefined ? "n/a" : String(trade.limitPrice);
   const fill =
-    trade.filledContracts !== null &&
-    trade.filledContracts !== undefined &&
-    trade.contracts !== null &&
-    trade.contracts !== undefined
-      ? `Fill: ${trade.filledContracts} / ${trade.contracts} contracts`
-      : null;
+    trade.filledContracts !== null && trade.filledContracts !== undefined &&
+    trade.contracts !== null && trade.contracts !== undefined
+      ? `Contracts: ${trade.filledContracts} / ${trade.contracts}`
+      : trade.filledContracts !== null && trade.filledContracts !== undefined
+        ? `Contracts filled: ${trade.filledContracts}`
+        : null;
   const tx = formatExplorerLinkLine(explorerTxBaseUrl, trade.transactionHash);
+  const unrealized = estimateUnrealizedPnl({
+    direction: trade.direction,
+    stake: trade.stake,
+    entryPrice: trade.limitPrice,
+    filledContracts: trade.filledContracts,
+    markPrice: trade.markPrice,
+  });
   const lines = [
     `${trade.symbol} · ${directionLabel(trade.direction)} · ${timeframe}`,
-    `Order status: ${trade.status}`,
-    `Resolves in: ${remaining}`,
+    `Order: ${formatOrderStatusLabel(trade.status)}`,
+    `Time left: ${remaining}`,
     `Stake: ${trade.stake} tUSDC`,
-    `Limit/fill price: ${price}`,
+    `Entry price: ${price}`,
   ];
   if (fill) lines.push(fill);
+  if (unrealized !== null) {
+    const sign = unrealized > 0 ? "+" : "";
+    lines.push(`Unrealized (mark): ${sign}${unrealized} tUSDC`);
+  } else if (trade.status === "filled" || trade.status === "partially_filled") {
+    lines.push("Unrealized: n/a (no live mark)");
+  }
   if (tx) lines.push(tx);
   if (trade.errorMessage) lines.push(`Note: ${trade.errorMessage}`);
+  return lines.join("\n");
+}
+
+export function formatHistoryBlock(
+  trade: DisplayTrade,
+  explorerTxBaseUrl: string,
+): string {
+  const duration = marketDurationSeconds(trade.tradingStart, trade.marketExpiry, trade.intervalSec);
+  const timeframe = formatTimeframe(duration);
+  const price =
+    trade.limitPrice === null || trade.limitPrice === undefined ? "n/a" : String(trade.limitPrice);
+  const kind = classifyFinalization({
+    status: trade.status,
+    outcome: trade.outcome,
+    pnl: trade.pnl,
+  });
+  const resultLabel =
+    kind === "win" ? "WIN"
+    : kind === "loss" ? "LOSS"
+    : kind === "void" ? "VOID"
+    : kind === "failed" ? "FAILED"
+    : kind === "cancelled" ? "CANCELLED"
+    : trade.status.toUpperCase();
+  const lines = [
+    `${trade.symbol} · ${directionLabel(trade.direction)} · ${timeframe}`,
+    `Result: ${resultLabel}`,
+    `Status: ${formatOrderStatusLabel(trade.status)}`,
+    `Stake: ${trade.stake} tUSDC`,
+    `Entry price: ${price}`,
+  ];
+  if (trade.filledContracts !== null && trade.filledContracts !== undefined) {
+    lines.push(`Contracts: ${trade.filledContracts}`);
+  }
+  if (trade.pnl !== null && trade.pnl !== undefined && Number.isFinite(trade.pnl)) {
+    const sign = trade.pnl > 0 ? "+" : "";
+    lines.push(`PnL: ${sign}${trade.pnl} tUSDC`);
+    if (kind === "win" && trade.stake + trade.pnl > 0) {
+      lines.push(`Payout (if claimed): ${trade.stake + trade.pnl} tUSDC`);
+    }
+  } else if (trade.status === "settled" || trade.status === "redeemed") {
+    lines.push("PnL: n/a (not reconstructed)");
+  }
+  const tx = formatExplorerLinkLine(explorerTxBaseUrl, trade.transactionHash);
+  if (tx) lines.push(tx);
   return lines.join("\n");
 }
 
@@ -172,27 +257,14 @@ export function formatTradeExecutionMessage(input: {
   nowSec?: number;
 }): string {
   const nowSec = input.nowSec ?? Math.floor(Date.now() / 1000);
-  const duration = marketDurationSeconds(
-    input.tradingStart,
-    input.marketExpiry,
-    input.intervalSec,
-  );
+  const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry, input.intervalSec);
   const timeframe = formatTimeframe(duration);
   const left = secondsUntilExpiry(input.marketExpiry, nowSec);
   const remaining =
-    left === null
-      ? "n/a"
-      : left <= 0
-        ? "resolved"
-        : formatRemaining(left);
+    left === null ? "n/a" : left <= 0 ? "resolved" : formatRemaining(left);
   const price =
-    input.limitPrice === null || input.limitPrice === undefined
-      ? "n/a"
-      : String(input.limitPrice);
-  const tx = formatExplorerLinkLine(
-    input.explorerTxBaseUrl,
-    input.transactionHash,
-  );
+    input.limitPrice === null || input.limitPrice === undefined ? "n/a" : String(input.limitPrice);
+  const tx = formatExplorerLinkLine(input.explorerTxBaseUrl, input.transactionHash);
   const lines = [
     "✅ Trade update",
     "",
@@ -223,9 +295,7 @@ export function classifyFinalization(input: {
     if (input.pnl > 0) return "win";
     if (input.pnl < 0) return "loss";
   }
-  if (input.outcome === "up" || input.outcome === "down") {
-    return "settled";
-  }
+  if (input.outcome === "up" || input.outcome === "down") return "settled";
   return "settled";
 }
 
@@ -244,32 +314,20 @@ export function formatFinalizationMessage(input: {
   explorerTxBaseUrl: string;
 }): string {
   const kind = classifyFinalization(input);
-  const duration = marketDurationSeconds(
-    input.tradingStart,
-    input.marketExpiry,
-    input.intervalSec,
-  );
+  const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry, input.intervalSec);
   const timeframe = formatTimeframe(duration);
   const header =
-    kind === "win"
-      ? "✅ Trade finalized"
-      : kind === "loss"
-        ? "❌ Trade finalized"
-        : kind === "failed" || kind === "cancelled"
-          ? "⚠️ Trade closed"
-          : "ℹ️ Trade finalized";
+    kind === "win" ? "✅ Trade finalized"
+    : kind === "loss" ? "❌ Trade finalized"
+    : kind === "failed" || kind === "cancelled" ? "⚠️ Trade closed"
+    : "ℹ️ Trade finalized";
   const resultLabel =
-    kind === "win"
-      ? "WIN"
-      : kind === "loss"
-        ? "LOSS"
-        : kind === "void"
-          ? "VOID"
-          : kind === "failed"
-            ? "FAILED"
-            : kind === "cancelled"
-              ? "CANCELLED"
-              : input.status.toUpperCase();
+    kind === "win" ? "WIN"
+    : kind === "loss" ? "LOSS"
+    : kind === "void" ? "VOID"
+    : kind === "failed" ? "FAILED"
+    : kind === "cancelled" ? "CANCELLED"
+    : input.status.toUpperCase();
   const lines = [
     header,
     "",
@@ -279,26 +337,17 @@ export function formatFinalizationMessage(input: {
   ];
   if (input.pnl !== null && input.pnl !== undefined && Number.isFinite(input.pnl)) {
     const payout = input.stake + input.pnl;
-    if (kind === "win" && payout > 0) {
-      lines.push(`Payout: ${payout} tUSDC`);
-    }
+    if (kind === "win" && payout > 0) lines.push(`Payout: ${payout} tUSDC`);
     const sign = input.pnl > 0 ? "+" : "";
     lines.push(`PnL: ${sign}${input.pnl} tUSDC`);
   }
   lines.push(`Final status: ${input.status}`);
-  const tx = formatExplorerLinkLine(
-    input.explorerTxBaseUrl,
-    input.transactionHash ?? null,
-  );
+  const tx = formatExplorerLinkLine(input.explorerTxBaseUrl, input.transactionHash ?? null);
   if (tx) lines.push(tx);
   if (input.errorMessage) lines.push(`Reason: ${input.errorMessage}`);
   return lines.join("\n");
 }
 
-/**
- * Map internal trade-cycle / risk codes to concise user-facing Telegram text.
- * Never expose stage numbers, DB field names, or implementation codes.
- */
 export function formatUserFacingTradeFailure(input: {
   code: string;
   reason?: string | null;
@@ -306,100 +355,40 @@ export function formatUserFacingTradeFailure(input: {
   const code = (input.code || "").toLowerCase();
   switch (code) {
     case "no_enter_decision":
-      return [
-        "⚪ No trade placed",
-        "",
-        "No market currently meets the strategy's conditions.",
-        "No funds were used.",
-      ].join("\n");
+      return ["⚪ No trade placed", "", "No market currently meets the strategy's conditions.", "No funds were used."].join("\n");
     case "trading_disabled":
-      return [
-        "⚪ Trading is turned off",
-        "",
-        "Enable it with /settings trading on, or review /settings.",
-      ].join("\n");
+      return ["⚪ Trading is turned off", "", "Enable it with /settings trading on, or review /settings."].join("\n");
     case "markets_unavailable":
-      return [
-        "⚪ Markets unavailable",
-        "",
-        "Could not load market data right now. Try again shortly.",
-        "No funds were used.",
-      ].join("\n");
+      return ["⚪ Markets unavailable", "", "Could not load market data right now. Try again shortly.", "No funds were used."].join("\n");
     case "live_execution_disabled":
-      return [
-        "⚪ Order not submitted on-chain",
-        "",
-        "Live trading is not enabled on the server.",
-        "Your trade intent may still be recorded.",
-      ].join("\n");
+      return ["⚪ Order not submitted on-chain", "", "Live trading is not enabled on the server.", "Your trade intent may still be recorded."].join("\n");
     case "stake_exceeds_user_max":
     case "stake_above_system_max":
     case "stake_below_system_min":
-      return [
-        "⚪ Stake not allowed",
-        "",
-        "The requested stake is outside your limits. Check /settings.",
-        "No funds were used.",
-      ].join("\n");
+      return ["⚪ Stake not allowed", "", "The requested stake is outside your limits. Check /settings.", "No funds were used."].join("\n");
     case "user_max_open_positions":
     case "system_max_open_positions":
-      return [
-        "⚪ Position limit reached",
-        "",
-        "You already have the maximum number of open trades.",
-        "Close or wait for positions to finish, or raise the limit in /settings.",
-        "No funds were used.",
-      ].join("\n");
+      return ["⚪ Position limit reached", "", "You already have the maximum number of open trades.", "Close or wait for positions to finish, or raise the limit in /settings.", "No funds were used."].join("\n");
     case "max_daily_loss":
     case "daily_loss_limit":
-      return [
-        "⚪ Daily loss limit reached",
-        "",
-        "No new trades until the next UTC day, or adjust /settings max daily loss.",
-        "No funds were used.",
-      ].join("\n");
+      return ["⚪ Daily loss limit reached", "", "No new trades until the next UTC day, or adjust /settings max daily loss.", "No funds were used."].join("\n");
     case "profit_target_reached":
     case "daily_profit_target":
-      return [
-        "⚪ Daily profit target reached",
-        "",
-        "New trades are paused until the next UTC day.",
-        "No funds were used.",
-      ].join("\n");
+      return ["⚪ Daily profit target reached", "", "New trades are paused until the next UTC day.", "No funds were used."].join("\n");
     case "insufficient_collateral":
     case "insufficient_balance":
-      return [
-        "⚪ Insufficient tUSDC",
-        "",
-        "Add funds with /faucet or check /status.",
-        "No trade was placed.",
-      ].join("\n");
+      return ["⚪ Insufficient tUSDC", "", "Add funds with /faucet or check /status.", "No trade was placed."].join("\n");
     case "unauthenticated":
-      return [
-        "⚪ Wallet not ready",
-        "",
-        "Use /start first to create your wallet.",
-      ].join("\n");
+      return ["⚪ Wallet not ready", "", "Use /start first to create your wallet."].join("\n");
     case "persist_failed":
     case "missing_trade_id":
     case "stale_intent_cleanup_failed":
-      return [
-        "⚪ Could not record the trade",
-        "",
-        "Please try again in a moment. No on-chain order was sent.",
-      ].join("\n");
+      return ["⚪ Could not record the trade", "", "Please try again in a moment. No on-chain order was sent."].join("\n");
     default:
-      return [
-        "⚪ No trade placed",
-        "",
-        "The trade could not be completed.",
-        "No funds were used unless an on-chain transaction already confirmed.",
-        "Check /status and try again, or use /help.",
-      ].join("\n");
+      return ["⚪ No trade placed", "", "The trade could not be completed.", "No funds were used unless an on-chain transaction already confirmed.", "Check /status and try again, or use /help."].join("\n");
   }
 }
 
-/** Human label for execution mode (never show raw internal field names alone). */
 export function formatExecutionModeLabel(mode: string): string {
   if (mode === "paper") return "paper (no on-chain orders)";
   if (mode === "testnet") return "testnet";

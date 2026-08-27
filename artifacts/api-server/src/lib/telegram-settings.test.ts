@@ -127,6 +127,8 @@ describe("formatSettingsHelp", () => {
     assert.match(help, /max daily loss 70/);
     assert.match(help, /max positions 5/);
     assert.match(help, /profit target 200/);
+    assert.match(help, /Default stake is what \/trade uses/);
+    assert.match(help, /Max stake is the per-trade ceiling/);
     assert.doesNotMatch(help, /underscore/i);
     assert.doesNotMatch(help, /max_stake/);
     assert.doesNotMatch(help, /max_daily_loss/);

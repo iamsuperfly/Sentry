@@ -81,6 +81,18 @@ export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestr
   };
 }
 
+/** Trader-facing market scan summary (no internal stage names). */
+export type MarketScanSummary = {
+  /** Markets returned by the indexer query (before filters). */
+  discovered: number;
+  /** After BTC/ETH filter. */
+  supported: number;
+  /** On-chain status Trading and indexer tradable. */
+  tradable: number;
+  /** Strategy enter decisions before picking the best edge. */
+  enterCandidates: number;
+};
+
 export type OrchestrationSuccess = {
   ok: true;
   userId: string;
@@ -89,6 +101,7 @@ export type OrchestrationSuccess = {
   intentSymbol: string;
   stake: number;
   execution: LiveSubmitResult;
+  marketScan: MarketScanSummary;
 };
 
 export type OrchestrationFailure = {
@@ -98,6 +111,7 @@ export type OrchestrationFailure = {
   userId?: string;
   tradeId?: string;
   decision?: StrategyDecision;
+  marketScan?: MarketScanSummary;
 };
 
 export type OrchestrationResult = OrchestrationSuccess | OrchestrationFailure;
@@ -180,12 +194,20 @@ export async function runTelegramTradeCycle(input: {
   }
 
   const strategy = deps.evaluate(snapshot.markets);
+  const marketScan: MarketScanSummary = {
+    discovered: snapshot.discoveredCount,
+    supported: snapshot.supportedCount,
+    tradable: snapshot.tradableCount,
+    enterCandidates: strategy.enterCount,
+  };
   const selected = selectEnterDecision(strategy);
   if (!selected) {
     return {
       ok: false,
       code: "no_enter_decision",
-      reason: "Stage 2 produced no enter decision for the current markets.",
+      reason:
+        "No market currently meets the entry conditions (edge, liquidity, time left).",
+      marketScan,
     };
   }
 
@@ -271,5 +293,6 @@ export async function runTelegramTradeCycle(input: {
     intentSymbol: persisted.intent.symbol,
     stake: persisted.intent.stake,
     execution,
+    marketScan,
   };
 }

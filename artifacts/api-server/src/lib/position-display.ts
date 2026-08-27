@@ -6,10 +6,14 @@ import type { AppConfig } from "../config.ts";
 import { shouldShowInPositions } from "./position-lifecycle.ts";
 import { getSupabaseClient } from "./supabase.ts";
 import {
+  formatHistoryBlock,
   formatPositionBlock,
   type DisplayTrade,
 } from "./telegram-trade-format.ts";
 import { OPEN_TRADE_STATUSES, TERMINAL_TRADE_STATUSES } from "./trade-state.ts";
+
+/** Default number of terminal trades shown on /history. */
+export const HISTORY_DISPLAY_LIMIT = 5;
 
 function decisionMeta(decision: unknown): {
   marketExpiry: string | number | null;
@@ -90,7 +94,7 @@ export async function listActivePositionsForDisplay(
 export async function listHistoryForDisplay(
   config: AppConfig,
   userId: string,
-  limit = 20,
+  limit = HISTORY_DISPLAY_LIMIT,
 ): Promise<DisplayTrade[]> {
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
@@ -113,16 +117,18 @@ export function formatPositionsMessage(
     return [
       "No active positions.",
       "",
-      "Open order statuses: pending, submitted, partially_filled, filled",
-      "(only while the market window is still open).",
+      "Only open orders on markets that have not yet expired appear here.",
+      "Completed trades are under /history.",
     ].join("\n");
   }
-  return trades
-    .map((trade, index) => {
+  return [
+    `Active positions (${trades.length}):`,
+    "",
+    ...trades.map((trade, index) => {
       const body = formatPositionBlock(trade, explorerTxBaseUrl, nowSec);
       return `${index + 1}. ${body}`;
-    })
-    .join("\n\n");
+    }),
+  ].join("\n\n");
 }
 
 export function formatHistoryMessage(
@@ -133,19 +139,15 @@ export function formatHistoryMessage(
     return [
       "No completed trades yet.",
       "",
-      "History includes cancelled, settled, redeemed, and failed.",
+      "History shows the latest settled, redeemed, cancelled, or failed trades.",
     ].join("\n");
   }
-  return trades
-    .map((trade, index) => {
-      const body = formatPositionBlock(trade, explorerTxBaseUrl);
-      const extra: string[] = [];
-      if (trade.outcome) extra.push(`Outcome: ${trade.outcome}`);
-      if (trade.pnl !== null && trade.pnl !== undefined) {
-        const sign = trade.pnl > 0 ? "+" : "";
-        extra.push(`PnL: ${sign}${trade.pnl} tUSDC`);
-      }
-      return [`${index + 1}. ${body}`, ...extra].join("\n");
-    })
-    .join("\n\n");
+  return [
+    `Latest ${trades.length} completed trade${trades.length === 1 ? "" : "s"}:`,
+    "",
+    ...trades.map((trade, index) => {
+      const body = formatHistoryBlock(trade, explorerTxBaseUrl);
+      return `${index + 1}. ${body}`;
+    }),
+  ].join("\n\n");
 }
