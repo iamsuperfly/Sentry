@@ -13,6 +13,7 @@ import type { DreamdexDiagnostic } from "./dreamdex.ts";
 import { attachMarketWindowMeta } from "./decision-market-meta.ts";
 import type { LiveSubmitResult } from "./live-execution.ts";
 import type { StrategyDecision, StrategyRunResult } from "./strategy.ts";
+import { summarizeMarketIntelligence } from "./market-intelligence.ts";
 import type { TelegramIdentity } from "./trade-persistence.ts";
 
 export const ORCHESTRATION_MODULE = "stage-6-execution-wiring";
@@ -91,6 +92,15 @@ export type MarketScanSummary = {
   tradable: number;
   /** Strategy enter decisions before picking the best edge. */
   enterCandidates: number;
+  withUsableAsks?: number;
+  btc?: number;
+  eth?: number;
+  byDuration?: Record<string, number>;
+  aiConfigured?: boolean;
+  aiCandidates?: number;
+  availableSlots?: number;
+  selected?: number;
+  listingApi?: string;
 };
 
 export type OrchestrationSuccess = {
@@ -194,11 +204,30 @@ export async function runTelegramTradeCycle(input: {
   }
 
   const strategy = deps.evaluate(snapshot.markets);
+  const intel = summarizeMarketIntelligence(
+    snapshot.markets.map((m) => ({
+      marketId: m.marketId,
+      asset: m.asset,
+      tradable: m.tradable,
+      finalized: m.finalized,
+      intervalSec: m.intervalSec,
+      tradingStart: m.tradingStart,
+      expiry: m.expiry,
+      decimals: m.decimals,
+      book: m.book,
+    })),
+  );
   const marketScan: MarketScanSummary = {
     discovered: snapshot.discoveredCount,
     supported: snapshot.supportedCount,
     tradable: snapshot.tradableCount,
     enterCandidates: strategy.enterCount,
+    withUsableAsks: intel.withUsableAsks,
+    btc: intel.btc,
+    eth: intel.eth,
+    byDuration: intel.byDuration,
+    listingApi: snapshot.listingApi,
+    selected: 0,
   };
   const selected = selectEnterDecision(strategy);
   if (!selected) {
@@ -210,6 +239,7 @@ export async function runTelegramTradeCycle(input: {
       marketScan,
     };
   }
+  marketScan.selected = 1;
 
   // Persist real market window so Telegram can show 5m / 30m / 1h without guessing.
   const decision = attachMarketWindowMeta(selected, snapshot.markets);
