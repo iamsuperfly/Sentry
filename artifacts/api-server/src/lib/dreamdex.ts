@@ -72,6 +72,7 @@ export type DreamdexDiagnostic = {
   discoveredCount: number;
   supportedCount: number;
   tradableCount: number;
+  listingApi?: string;
 };
 
 function serializeBook(book: BinaryOrderBook): DreamdexBook {
@@ -151,12 +152,35 @@ export async function readDreamdexMarkets(
 
   try {
     const requestedAsset = asset?.trim().toUpperCase();
-    const markets = await exchange.client.listBinaryMarkets({
+    const listOpts = {
       asset: requestedAsset && SUPPORTED_ASSETS.has(requestedAsset)
         ? requestedAsset
         : undefined,
       limit: MARKET_LIMIT,
-    });
+    };
+    // Prefer live listing when available (SDK 0.28.1); fall back to general binary list.
+    let listingApi = "listBinaryMarkets";
+    let markets: Awaited<
+      ReturnType<typeof exchange.client.listBinaryMarkets>
+    >;
+    const liveFn = (
+      exchange.client as {
+        listLiveBinaryMarkets?: (opts: typeof listOpts) => Promise<
+          Awaited<ReturnType<typeof exchange.client.listBinaryMarkets>>
+        >;
+      }
+    ).listLiveBinaryMarkets;
+    if (typeof liveFn === "function") {
+      try {
+        markets = await liveFn.call(exchange.client, listOpts);
+        listingApi = "listLiveBinaryMarkets";
+      } catch {
+        markets = await exchange.client.listBinaryMarkets(listOpts);
+        listingApi = "listBinaryMarkets";
+      }
+    } else {
+      markets = await exchange.client.listBinaryMarkets(listOpts);
+    }
     const supportedMarkets = markets.filter((market) =>
       SUPPORTED_ASSETS.has(market.asset.toUpperCase()),
     );
@@ -190,6 +214,7 @@ export async function readDreamdexMarkets(
       discoveredCount: markets.length,
       supportedCount: selectedMarkets.length,
       tradableCount: diagnostics.filter((market) => market.tradable).length,
+      listingApi,
     };
   } finally {
     await Promise.race([

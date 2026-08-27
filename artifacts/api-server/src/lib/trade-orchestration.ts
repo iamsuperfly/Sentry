@@ -1,11 +1,8 @@
 /**
  * Production execution wiring (Stage 6 entry boundary).
  *
- * Telegram identity → server-side user_id + wallet → Stage 2 decision →
- * persisted trade intent → executePersistedTradeForTelegram.
- *
- * Does not trust client-supplied user_id or wallet addresses.
- * Does not place orders itself — delegates to existing Stage 5 path.
+ * Production: 1m (Binance spot ±0.05%) then 15m+ Gemini → validate → risk → persist → execute.
+ * Unit tests may inject `evaluate` for the legacy edge-taker path.
  */
 
 import type { AppConfig } from "../config.ts";
@@ -13,6 +10,24 @@ import type { DreamdexDiagnostic } from "./dreamdex.ts";
 import { attachMarketWindowMeta } from "./decision-market-meta.ts";
 import type { LiveSubmitResult } from "./live-execution.ts";
 import type { StrategyDecision, StrategyRunResult } from "./strategy.ts";
+import { summarizeMarketIntelligence } from "./market-intelligence.ts";
+import {
+  callGeminiMarketDecisions,
+  isGeminiConfigured,
+} from "./gemini-client.ts";
+import { validateAiCandidates } from "./ai-decision-validate.ts";
+import {
+  geminiCandidateToStrategyDecision,
+  marketEligibleForGemini,
+  toGeminiMarketInput,
+} from "./gemini-path.ts";
+import { secondsToExpiry } from "./strategy.ts";
+import { logger } from "./logger.ts";
+import {
+  evaluateOneMinMarketWithBinance,
+  marketInOneMinFinalWindow,
+  oneMinEnterToStrategyDecision,
+} from "./one-min-runtime.ts";
 import type { TelegramIdentity } from "./trade-persistence.ts";
 
 export const ORCHESTRATION_MODULE = "stage-6-execution-wiring";
@@ -56,16 +71,23 @@ export type TradeOrchestrationDeps = {
   }) => Promise<LiveSubmitResult>;
 };
 
-/** Production defaults — lazy so unit tests with injected deps never load the SDK. */
 export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestrationDeps> {
-  const [{ readDreamdexMarkets }, { evaluateMarkets }, { createPersistedTradeIntent, expireStalePendingTradeIntentsForTelegram }, { readPendingMarketState }, { executePersistedTradeForTelegram }] =
-    await Promise.all([
-      import("./dreamdex.ts"),
-      import("./strategy.ts"),
-      import("./trade-persistence.ts"),
-      import("./live-execution-adapter.ts"),
-      import("./trade-execution.ts"),
-    ]);
+  const [
+    { readDreamdexMarkets },
+    { evaluateMarkets },
+    {
+      createPersistedTradeIntent,
+      expireStalePendingTradeIntentsForTelegram,
+    },
+    { readPendingMarketState },
+    { executePersistedTradeForTelegram },
+  ] = await Promise.all([
+    import("./dreamdex.ts"),
+    import("./strategy.ts"),
+    import("./trade-persistence.ts"),
+    import("./live-execution-adapter.ts"),
+    import("./trade-execution.ts"),
+  ]);
   return {
     readMarkets: readDreamdexMarkets,
     evaluate: evaluateMarkets,
@@ -76,21 +98,26 @@ export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestr
         markets,
         (marketId) => readPendingMarketState(config, marketId),
       ),
-    persistIntent: createPersistedTradeIntent as TradeOrchestrationDeps["persistIntent"],
+    persistIntent:
+      createPersistedTradeIntent as TradeOrchestrationDeps["persistIntent"],
     executePersisted: executePersistedTradeForTelegram,
   };
 }
 
-/** Trader-facing market scan summary (no internal stage names). */
 export type MarketScanSummary = {
-  /** Markets returned by the indexer query (before filters). */
   discovered: number;
-  /** After BTC/ETH filter. */
   supported: number;
-  /** On-chain status Trading and indexer tradable. */
   tradable: number;
-  /** Strategy enter decisions before picking the best edge. */
   enterCandidates: number;
+  withUsableAsks?: number;
+  btc?: number;
+  eth?: number;
+  byDuration?: Record<string, number>;
+  aiConfigured?: boolean;
+  aiCandidates?: number;
+  availableSlots?: number;
+  selected?: number;
+  listingApi?: string;
 };
 
 export type OrchestrationSuccess = {
@@ -122,10 +149,6 @@ function tradeIdFromPersisted(trade: unknown): string | null {
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 
-/**
- * Select the highest-edge enter decision from a strategy run, if any.
- * evaluateMarkets already sorts enters by edge descending first.
- */
 export function selectEnterDecision(
   run: StrategyRunResult,
 ): StrategyDecision | null {
@@ -134,19 +157,9 @@ export function selectEnterDecision(
   return enters[0] ?? null;
 }
 
-/**
- * Authenticated production trade cycle.
- *
- * - Identity comes only from Telegram (`identity.id`).
- * - Wallet + internal user_id are resolved inside persist/execute helpers.
- * - liveExecutionRequested is caller-controlled; ENABLE_LIVE_EXECUTION still gates chain writes.
- * - Market window metadata (tradingStart / intervalSec) is attached before persist
- *   from DreamDEX BinaryMarket fields — never inferred from trade placement time.
- */
 export async function runTelegramTradeCycle(input: {
   config: AppConfig;
   identity: TelegramIdentity;
-  /** When true, requests live path; still blocked if ENABLE_LIVE_EXECUTION is false. */
   liveExecutionRequested?: boolean;
   stake?: number;
   asset?: string;
@@ -164,7 +177,6 @@ export async function runTelegramTradeCycle(input: {
   const provided = input.deps ?? {};
   const needsDefaults =
     !provided.readMarkets ||
-    !provided.evaluate ||
     !provided.persistIntent ||
     !provided.executePersisted;
   const defaults = needsDefaults
@@ -172,11 +184,29 @@ export async function runTelegramTradeCycle(input: {
     : null;
   const deps: TradeOrchestrationDeps = {
     readMarkets: provided.readMarkets ?? defaults!.readMarkets,
-    evaluate: provided.evaluate ?? defaults!.evaluate,
+    evaluate:
+      provided.evaluate ??
+      defaults?.evaluate ??
+      ((markets) => ({
+        strategyName: "none",
+        strategyVersion: "0",
+        evaluatedAt: new Date().toISOString(),
+        config: {
+          edgeThreshold: 0,
+          minSecondsToExpiry: 0,
+          maxSpread: 1,
+          supportedAssets: ["BTC", "ETH"],
+        },
+        decisions: [],
+        enterCount: 0,
+        skipCount: markets.length,
+      })),
     persistIntent: provided.persistIntent ?? defaults!.persistIntent,
     executePersisted: provided.executePersisted ?? defaults!.executePersisted,
-    expireStalePending: provided.expireStalePending ?? defaults?.expireStalePending,
+    expireStalePending:
+      provided.expireStalePending ?? defaults?.expireStalePending,
   };
+  const useInjectedStrategy = Boolean(provided.evaluate);
 
   let snapshot: DreamdexDiagnostic;
   try {
@@ -193,26 +223,266 @@ export async function runTelegramTradeCycle(input: {
     };
   }
 
-  const strategy = deps.evaluate(snapshot.markets);
+  const intel = summarizeMarketIntelligence(
+    snapshot.markets.map((m) => ({
+      marketId: m.marketId,
+      asset: m.asset,
+      tradable: m.tradable,
+      finalized: m.finalized,
+      intervalSec: m.intervalSec,
+      tradingStart: m.tradingStart,
+      expiry: m.expiry,
+      decimals: m.decimals,
+      book: m.book,
+    })),
+  );
+
+  let decision: StrategyDecision;
+  let resolvedStake = input.stake;
   const marketScan: MarketScanSummary = {
     discovered: snapshot.discoveredCount,
     supported: snapshot.supportedCount,
     tradable: snapshot.tradableCount,
-    enterCandidates: strategy.enterCount,
+    enterCandidates: 0,
+    withUsableAsks: intel.withUsableAsks,
+    btc: intel.btc,
+    eth: intel.eth,
+    byDuration: intel.byDuration,
+    listingApi: snapshot.listingApi,
+    aiConfigured: false,
+    aiCandidates: 0,
+    selected: 0,
   };
-  const selected = selectEnterDecision(strategy);
-  if (!selected) {
-    return {
-      ok: false,
-      code: "no_enter_decision",
-      reason:
-        "No market currently meets the entry conditions (edge, liquidity, time left).",
-      marketScan,
-    };
-  }
 
-  // Persist real market window so Telegram can show 5m / 30m / 1h without guessing.
-  const decision = attachMarketWindowMeta(selected, snapshot.markets);
+  if (useInjectedStrategy) {
+    const strategy = deps.evaluate(snapshot.markets);
+    marketScan.enterCandidates = strategy.enterCount;
+    marketScan.aiConfigured = false;
+    const selected = selectEnterDecision(strategy);
+    if (!selected) {
+      return {
+        ok: false,
+        code: "no_enter_decision",
+        reason:
+          "No market currently meets the entry conditions (edge, liquidity, time left).",
+        marketScan,
+      };
+    }
+    marketScan.selected = 1;
+    decision = attachMarketWindowMeta(selected, snapshot.markets);
+  } else {
+    const nowSec = Math.floor(Date.now() / 1000);
+    let oneMinSelected = false;
+
+    const oneMinCandidates = snapshot.markets.filter((m) =>
+      marketInOneMinFinalWindow(m, nowSec),
+    );
+    for (const m of oneMinCandidates) {
+      try {
+        const { decision: oneMin } = await evaluateOneMinMarketWithBinance({
+          market: m,
+          nowSec,
+        });
+        logger.info(
+          {
+            strategy: "one-min-underlying-0.05pct-v1",
+            marketId: m.marketId,
+            asset: m.asset,
+            action: oneMin.action,
+            code: oneMin.action === "skip" ? oneMin.code : undefined,
+          },
+          "1m strategy evaluation",
+        );
+        if (oneMin.action === "enter") {
+          const mapped = oneMinEnterToStrategyDecision({
+            market: m,
+            oneMin,
+            nowSec,
+          });
+          if (mapped) {
+            marketScan.enterCandidates = 1;
+            marketScan.selected = 1;
+            marketScan.aiConfigured = isGeminiConfigured({
+              apiKey: input.config.geminiApiKey,
+            });
+            decision = attachMarketWindowMeta(mapped, snapshot.markets);
+            oneMinSelected = true;
+            break;
+          }
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            marketId: m.marketId,
+            err: err instanceof Error ? err.message.slice(0, 120) : "1m error",
+          },
+          "1m strategy error",
+        );
+      }
+    }
+
+    if (!oneMinSelected) {
+      const geminiEligible = snapshot.markets.filter((m) =>
+        marketEligibleForGemini(m, nowSec),
+      );
+      const geminiConfigured = isGeminiConfigured({
+        apiKey: input.config.geminiApiKey,
+      });
+      marketScan.aiConfigured = geminiConfigured;
+
+      if (!geminiConfigured) {
+        logger.info(
+          { provider: "gemini", marketsEligible: geminiEligible.length },
+          "AI not configured — GEMINI_API_KEY missing",
+        );
+        return {
+          ok: false,
+          code: "ai_not_configured",
+          reason:
+            "AI not configured. Set GEMINI_API_KEY (and optional GEMINI_MODEL) on the server.",
+          marketScan,
+        };
+      }
+
+      if (geminiEligible.length === 0) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason:
+            "No 15m+ tradable markets with usable asks in this scan for Gemini.",
+          marketScan,
+        };
+      }
+
+      const availableSlots = Math.max(
+        1,
+        Math.min(input.config.systemLimits.maxOpenPositions, 3),
+      );
+      marketScan.availableSlots = availableSlots;
+
+      const geminiInputs = geminiEligible.map((m) =>
+        toGeminiMarketInput(m, nowSec),
+      );
+      const geminiResult = await callGeminiMarketDecisions({
+        apiKey: input.config.geminiApiKey!,
+        model: input.config.geminiModel,
+        markets: geminiInputs,
+        availableSlots,
+      });
+
+      if (!geminiResult.ok) {
+        logger.warn(
+          {
+            provider: "gemini",
+            model: geminiResult.audit.model,
+            code: geminiResult.code,
+            latencyMs: geminiResult.audit.latencyMs,
+            marketsSupplied: geminiResult.audit.marketsSupplied,
+          },
+          "AI request failed",
+        );
+        return {
+          ok: false,
+          code: geminiResult.code,
+          reason: geminiResult.reason,
+          marketScan,
+        };
+      }
+
+      logger.info(
+        {
+          provider: "gemini",
+          model: geminiResult.audit.model,
+          latencyMs: geminiResult.audit.latencyMs,
+          marketsSupplied: geminiResult.audit.marketsSupplied,
+          decisionsReturned: geminiResult.audit.decisionsReturned,
+          snapshotHash: geminiResult.audit.snapshotHash,
+        },
+        "AI decisions received",
+      );
+
+      const validation = validateAiCandidates(
+        geminiResult.decisions.map((d) => ({
+          marketId: d.marketId,
+          direction: d.direction,
+          confidence: d.confidence,
+          reason: d.reason,
+          stake: d.stake,
+        })),
+        {
+          markets: geminiEligible.map((m) => ({
+            marketId: m.marketId,
+            tradable: m.tradable,
+            finalized: m.finalized,
+            secondsToExpiry: secondsToExpiry(m.expiry, nowSec),
+            asset: m.asset,
+          })),
+          availableSlots,
+          systemMinStake: input.config.systemLimits.minStake,
+          systemMaxStake: input.config.systemLimits.maxStake,
+          userMaxStake: input.config.systemLimits.maxStake,
+          defaultStake: input.stake ?? input.config.systemLimits.minStake,
+        },
+      );
+
+      marketScan.aiCandidates = geminiResult.decisions.length;
+      marketScan.enterCandidates = validation.accepted.length;
+
+      logger.info(
+        {
+          provider: "gemini",
+          accepted: validation.accepted.length,
+          rejected: validation.rejected.length,
+          rejectedCodes: validation.rejected.map((r) => r.code),
+        },
+        "AI deterministic validation complete",
+      );
+
+      if (validation.accepted.length === 0) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason:
+            validation.rejected[0]?.reason ??
+            "Gemini returned no candidates that passed deterministic validation.",
+          marketScan,
+        };
+      }
+
+      const ranked = [...validation.accepted].sort(
+        (a, b) => b.confidence - a.confidence,
+      );
+      const top = ranked[0]!;
+      const market = geminiEligible.find((m) => m.marketId === top.marketId);
+      if (!market) {
+        return {
+          ok: false,
+          code: "unknown_market",
+          reason: "Accepted Gemini marketId missing from snapshot.",
+          marketScan,
+        };
+      }
+
+      const selected = geminiCandidateToStrategyDecision({
+        candidate: top,
+        market,
+        nowSec,
+      });
+      if (!selected) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason:
+            "Could not map Gemini decision to a tradable limit price from the book.",
+          marketScan,
+        };
+      }
+
+      if (top.stake > 0) resolvedStake = top.stake;
+      marketScan.selected = 1;
+      decision = attachMarketWindowMeta(selected, snapshot.markets);
+    }
+  }
 
   if (deps.expireStalePending) {
     try {
@@ -241,7 +511,7 @@ export async function runTelegramTradeCycle(input: {
       config: input.config,
       identity: input.identity,
       decision,
-      stake: input.stake,
+      stake: resolvedStake,
     });
   } catch (error) {
     const message =
@@ -276,8 +546,6 @@ export async function runTelegramTradeCycle(input: {
     };
   }
 
-  // Execution always goes through the existing authenticated boundary.
-  // Never accepts a client wallet or user_id override.
   const execution = await deps.executePersisted({
     config: input.config,
     identity: input.identity,
