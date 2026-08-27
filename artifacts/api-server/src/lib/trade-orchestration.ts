@@ -1,14 +1,8 @@
 /**
  * Production execution wiring (Stage 6 entry boundary).
  *
- * Telegram identity → server-side user_id + wallet → Stage 2 decision →
- * persisted trade intent → executePersistedTradeForTelegram.
- *
- * Does not trust client-supplied user_id or wallet addresses.
- * Does not place orders itself — delegates to existing Stage 5 path.
- *
- * Production decision path (15m+): Gemini → validate → risk → persist → execute.
- * Unit tests may inject `evaluate` to exercise the legacy edge-taker path.
+ * Production: 1m (Binance spot ±0.05%) then 15m+ Gemini → validate → risk → persist → execute.
+ * Unit tests may inject `evaluate` for the legacy edge-taker path.
  */
 
 import type { AppConfig } from "../config.ts";
@@ -29,6 +23,11 @@ import {
 } from "./gemini-path.ts";
 import { secondsToExpiry } from "./strategy.ts";
 import { logger } from "./logger.ts";
+import {
+  evaluateOneMinMarketWithBinance,
+  marketInOneMinFinalWindow,
+  oneMinEnterToStrategyDecision,
+} from "./one-min-runtime.ts";
 import type { TelegramIdentity } from "./trade-persistence.ts";
 
 export const ORCHESTRATION_MODULE = "stage-6-execution-wiring";
@@ -273,165 +272,216 @@ export async function runTelegramTradeCycle(input: {
     decision = attachMarketWindowMeta(selected, snapshot.markets);
   } else {
     const nowSec = Math.floor(Date.now() / 1000);
-    const geminiEligible = snapshot.markets.filter((m) =>
-      marketEligibleForGemini(m, nowSec),
-    );
-    const geminiConfigured = isGeminiConfigured({
-      apiKey: input.config.geminiApiKey,
-    });
-    marketScan.aiConfigured = geminiConfigured;
+    let oneMinSelected = false;
 
-    if (!geminiConfigured) {
-      logger.info(
-        { provider: "gemini", marketsEligible: geminiEligible.length },
-        "AI not configured — GEMINI_API_KEY missing",
+    const oneMinCandidates = snapshot.markets.filter((m) =>
+      marketInOneMinFinalWindow(m, nowSec),
+    );
+    for (const m of oneMinCandidates) {
+      try {
+        const { decision: oneMin } = await evaluateOneMinMarketWithBinance({
+          market: m,
+          nowSec,
+        });
+        logger.info(
+          {
+            strategy: "one-min-underlying-0.05pct-v1",
+            marketId: m.marketId,
+            asset: m.asset,
+            action: oneMin.action,
+            code: oneMin.action === "skip" ? oneMin.code : undefined,
+          },
+          "1m strategy evaluation",
+        );
+        if (oneMin.action === "enter") {
+          const mapped = oneMinEnterToStrategyDecision({
+            market: m,
+            oneMin,
+            nowSec,
+          });
+          if (mapped) {
+            marketScan.enterCandidates = 1;
+            marketScan.selected = 1;
+            marketScan.aiConfigured = isGeminiConfigured({
+              apiKey: input.config.geminiApiKey,
+            });
+            decision = attachMarketWindowMeta(mapped, snapshot.markets);
+            oneMinSelected = true;
+            break;
+          }
+        }
+      } catch (err) {
+        logger.warn(
+          {
+            marketId: m.marketId,
+            err: err instanceof Error ? err.message.slice(0, 120) : "1m error",
+          },
+          "1m strategy error",
+        );
+      }
+    }
+
+    if (!oneMinSelected) {
+      const geminiEligible = snapshot.markets.filter((m) =>
+        marketEligibleForGemini(m, nowSec),
       );
-      return {
-        ok: false,
-        code: "ai_not_configured",
-        reason:
-          "AI not configured. Set GEMINI_API_KEY (and optional GEMINI_MODEL) on the server.",
-        marketScan,
-      };
-    }
+      const geminiConfigured = isGeminiConfigured({
+        apiKey: input.config.geminiApiKey,
+      });
+      marketScan.aiConfigured = geminiConfigured;
 
-    if (geminiEligible.length === 0) {
-      return {
-        ok: false,
-        code: "no_enter_decision",
-        reason:
-          "No 15m+ tradable markets with usable asks in this scan for Gemini.",
-        marketScan,
-      };
-    }
+      if (!geminiConfigured) {
+        logger.info(
+          { provider: "gemini", marketsEligible: geminiEligible.length },
+          "AI not configured — GEMINI_API_KEY missing",
+        );
+        return {
+          ok: false,
+          code: "ai_not_configured",
+          reason:
+            "AI not configured. Set GEMINI_API_KEY (and optional GEMINI_MODEL) on the server.",
+          marketScan,
+        };
+      }
 
-    const availableSlots = Math.max(
-      1,
-      Math.min(input.config.systemLimits.maxOpenPositions, 3),
-    );
-    marketScan.availableSlots = availableSlots;
+      if (geminiEligible.length === 0) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason:
+            "No 15m+ tradable markets with usable asks in this scan for Gemini.",
+          marketScan,
+        };
+      }
 
-    const geminiInputs = geminiEligible.map((m) =>
-      toGeminiMarketInput(m, nowSec),
-    );
-    const geminiResult = await callGeminiMarketDecisions({
-      apiKey: input.config.geminiApiKey!,
-      model: input.config.geminiModel,
-      markets: geminiInputs,
-      availableSlots,
-    });
+      const availableSlots = Math.max(
+        1,
+        Math.min(input.config.systemLimits.maxOpenPositions, 3),
+      );
+      marketScan.availableSlots = availableSlots;
 
-    if (!geminiResult.ok) {
-      logger.warn(
+      const geminiInputs = geminiEligible.map((m) =>
+        toGeminiMarketInput(m, nowSec),
+      );
+      const geminiResult = await callGeminiMarketDecisions({
+        apiKey: input.config.geminiApiKey!,
+        model: input.config.geminiModel,
+        markets: geminiInputs,
+        availableSlots,
+      });
+
+      if (!geminiResult.ok) {
+        logger.warn(
+          {
+            provider: "gemini",
+            model: geminiResult.audit.model,
+            code: geminiResult.code,
+            latencyMs: geminiResult.audit.latencyMs,
+            marketsSupplied: geminiResult.audit.marketsSupplied,
+          },
+          "AI request failed",
+        );
+        return {
+          ok: false,
+          code: geminiResult.code,
+          reason: geminiResult.reason,
+          marketScan,
+        };
+      }
+
+      logger.info(
         {
           provider: "gemini",
           model: geminiResult.audit.model,
-          code: geminiResult.code,
           latencyMs: geminiResult.audit.latencyMs,
           marketsSupplied: geminiResult.audit.marketsSupplied,
+          decisionsReturned: geminiResult.audit.decisionsReturned,
+          snapshotHash: geminiResult.audit.snapshotHash,
         },
-        "AI request failed",
+        "AI decisions received",
       );
-      return {
-        ok: false,
-        code: geminiResult.code,
-        reason: geminiResult.reason,
-        marketScan,
-      };
-    }
 
-    logger.info(
-      {
-        provider: "gemini",
-        model: geminiResult.audit.model,
-        latencyMs: geminiResult.audit.latencyMs,
-        marketsSupplied: geminiResult.audit.marketsSupplied,
-        decisionsReturned: geminiResult.audit.decisionsReturned,
-        snapshotHash: geminiResult.audit.snapshotHash,
-      },
-      "AI decisions received",
-    );
-
-    const validation = validateAiCandidates(
-      geminiResult.decisions.map((d) => ({
-        marketId: d.marketId,
-        direction: d.direction,
-        confidence: d.confidence,
-        reason: d.reason,
-        stake: d.stake,
-      })),
-      {
-        markets: geminiEligible.map((m) => ({
-          marketId: m.marketId,
-          tradable: m.tradable,
-          finalized: m.finalized,
-          secondsToExpiry: secondsToExpiry(m.expiry, nowSec),
-          asset: m.asset,
+      const validation = validateAiCandidates(
+        geminiResult.decisions.map((d) => ({
+          marketId: d.marketId,
+          direction: d.direction,
+          confidence: d.confidence,
+          reason: d.reason,
+          stake: d.stake,
         })),
-        availableSlots,
-        systemMinStake: input.config.systemLimits.minStake,
-        systemMaxStake: input.config.systemLimits.maxStake,
-        userMaxStake: input.config.systemLimits.maxStake,
-        defaultStake: input.stake ?? input.config.systemLimits.minStake,
-      },
-    );
+        {
+          markets: geminiEligible.map((m) => ({
+            marketId: m.marketId,
+            tradable: m.tradable,
+            finalized: m.finalized,
+            secondsToExpiry: secondsToExpiry(m.expiry, nowSec),
+            asset: m.asset,
+          })),
+          availableSlots,
+          systemMinStake: input.config.systemLimits.minStake,
+          systemMaxStake: input.config.systemLimits.maxStake,
+          userMaxStake: input.config.systemLimits.maxStake,
+          defaultStake: input.stake ?? input.config.systemLimits.minStake,
+        },
+      );
 
-    marketScan.aiCandidates = geminiResult.decisions.length;
-    marketScan.enterCandidates = validation.accepted.length;
+      marketScan.aiCandidates = geminiResult.decisions.length;
+      marketScan.enterCandidates = validation.accepted.length;
 
-    logger.info(
-      {
-        provider: "gemini",
-        accepted: validation.accepted.length,
-        rejected: validation.rejected.length,
-        rejectedCodes: validation.rejected.map((r) => r.code),
-      },
-      "AI deterministic validation complete",
-    );
+      logger.info(
+        {
+          provider: "gemini",
+          accepted: validation.accepted.length,
+          rejected: validation.rejected.length,
+          rejectedCodes: validation.rejected.map((r) => r.code),
+        },
+        "AI deterministic validation complete",
+      );
 
-    if (validation.accepted.length === 0) {
-      return {
-        ok: false,
-        code: "no_enter_decision",
-        reason:
-          validation.rejected[0]?.reason ??
-          "Gemini returned no candidates that passed deterministic validation.",
-        marketScan,
-      };
+      if (validation.accepted.length === 0) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason:
+            validation.rejected[0]?.reason ??
+            "Gemini returned no candidates that passed deterministic validation.",
+          marketScan,
+        };
+      }
+
+      const ranked = [...validation.accepted].sort(
+        (a, b) => b.confidence - a.confidence,
+      );
+      const top = ranked[0]!;
+      const market = geminiEligible.find((m) => m.marketId === top.marketId);
+      if (!market) {
+        return {
+          ok: false,
+          code: "unknown_market",
+          reason: "Accepted Gemini marketId missing from snapshot.",
+          marketScan,
+        };
+      }
+
+      const selected = geminiCandidateToStrategyDecision({
+        candidate: top,
+        market,
+        nowSec,
+      });
+      if (!selected) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason:
+            "Could not map Gemini decision to a tradable limit price from the book.",
+          marketScan,
+        };
+      }
+
+      if (top.stake > 0) resolvedStake = top.stake;
+      marketScan.selected = 1;
+      decision = attachMarketWindowMeta(selected, snapshot.markets);
     }
-
-    const ranked = [...validation.accepted].sort(
-      (a, b) => b.confidence - a.confidence,
-    );
-    const top = ranked[0]!;
-    const market = geminiEligible.find((m) => m.marketId === top.marketId);
-    if (!market) {
-      return {
-        ok: false,
-        code: "unknown_market",
-        reason: "Accepted Gemini marketId missing from snapshot.",
-        marketScan,
-      };
-    }
-
-    const selected = geminiCandidateToStrategyDecision({
-      candidate: top,
-      market,
-      nowSec,
-    });
-    if (!selected) {
-      return {
-        ok: false,
-        code: "no_enter_decision",
-        reason:
-          "Could not map Gemini decision to a tradable limit price from the book.",
-        marketScan,
-      };
-    }
-
-    if (top.stake > 0) resolvedStake = top.stake;
-    marketScan.selected = 1;
-    decision = attachMarketWindowMeta(selected, snapshot.markets);
   }
 
   if (deps.expireStalePending) {
