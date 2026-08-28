@@ -29,6 +29,16 @@ import {
   oneMinEnterToStrategyDecision,
 } from "./one-min-runtime.ts";
 import type { TelegramIdentity } from "./trade-persistence.ts";
+import {
+  getOpenPositionCount,
+  getUserSettings,
+} from "./trade-persistence.ts";
+import { ensureUser } from "./supabase.ts";
+import {
+  computeAvailableSlots,
+  processAiCandidateTrades,
+  type CandidateTradeAttempt,
+} from "./multi-ai-execution.ts";
 
 export const ORCHESTRATION_MODULE = "stage-6-execution-wiring";
 
@@ -120,6 +130,8 @@ export type MarketScanSummary = {
   listingApi?: string;
 };
 
+export type { CandidateTradeAttempt } from "./multi-ai-execution.ts";
+
 export type OrchestrationSuccess = {
   ok: true;
   userId: string;
@@ -129,6 +141,8 @@ export type OrchestrationSuccess = {
   stake: number;
   execution: LiveSubmitResult;
   marketScan: MarketScanSummary;
+  /** Independent trade attempts (multi AI slots or single 1m/injected). */
+  trades: CandidateTradeAttempt[];
 };
 
 export type OrchestrationFailure = {
@@ -254,9 +268,6 @@ export async function runTelegramTradeCycle(input: {
     selected: 0,
   };
 
-  // NOTE: Multi-slot AI execution is implemented in follow-up commit on this branch.
-  // This restore keeps production behavior identical to main until the multi-slot patch lands.
-
   if (useInjectedStrategy) {
     const strategy = deps.evaluate(snapshot.markets);
     marketScan.enterCandidates = strategy.enterCount;
@@ -367,11 +378,25 @@ export async function runTelegramTradeCycle(input: {
         };
       }
 
-      const availableSlots = Math.max(
-        1,
-        Math.min(input.config.systemLimits.maxOpenPositions, 3),
-      );
+      const userIdForSlots = await ensureUser(input.config, input.identity);
+      const [settingsForSlots, openCount] = await Promise.all([
+        getUserSettings(input.config, userIdForSlots),
+        getOpenPositionCount(input.config, userIdForSlots),
+      ]);
+      const availableSlots = computeAvailableSlots({
+        userMaxOpen: settingsForSlots.maxOpenPositions,
+        systemMaxOpen: input.config.systemLimits.maxOpenPositions,
+        openCount,
+      });
       marketScan.availableSlots = availableSlots;
+      if (availableSlots <= 0) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason: "No available position slots (at max open positions).",
+          marketScan,
+        };
+      }
 
       const aiInputs = aiEligible.map((m) => toGeminiMarketInput(m, nowSec));
       const aiResult = await callGroqMarketDecisions({
@@ -472,49 +497,97 @@ export async function runTelegramTradeCycle(input: {
       const ranked = [...validation.accepted].sort(
         (a, b) => b.confidence - a.confidence,
       );
-      const top = ranked[0]!;
-      const market = aiEligible.find((m) => m.marketId === top.marketId);
-      if (!market) {
-        return {
-          ok: false,
-          code: "unknown_market",
-          reason: "Accepted AI marketId missing from snapshot.",
-          marketScan,
-        };
-      }
+      const selectedCandidates = ranked.slice(0, availableSlots);
+      marketScan.selected = selectedCandidates.length;
 
-      const selected = geminiCandidateToStrategyDecision({
-        candidate: top,
-        market,
-        nowSec,
-      });
-      if (!selected) {
-        return {
-          ok: false,
-          code: "no_enter_decision",
-          reason:
-            "Could not map AI decision to a tradable limit price from the book.",
-          marketScan,
-        };
-      }
-
-      if (top.stake > 0) resolvedStake = top.stake;
-      marketScan.selected = 1;
-      decision = attachMarketWindowMeta(selected, snapshot.markets);
       logger.info(
         {
           provider: "groq",
-          selectedMarketId: decision.marketId,
-          asset: decision.asset,
-          direction: decision.direction,
-          confidence: top.confidence,
-          stake: top.stake > 0 ? top.stake : resolvedStake,
-          limitPriceHint: decision.limitPriceHint,
-          reason: top.reason.slice(0, 160),
-          acceptedButNotSelected: ranked.slice(1).map((a) => a.marketId),
+          availableSlots,
+          selectedCount: selectedCandidates.length,
+          selectedCandidates: selectedCandidates.map((c) => ({
+            marketId: c.marketId,
+            direction: c.direction,
+            confidence: c.confidence,
+            stake: c.stake,
+            reason: c.reason.slice(0, 120),
+          })),
         },
-        "AI final candidate selected for persist/execute",
+        "AI candidates selected",
       );
+
+      if (deps.expireStalePending) {
+        try {
+          await deps.expireStalePending({
+            config: input.config,
+            identity: input.identity,
+            markets: snapshot.markets,
+          });
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.message.slice(0, 200)
+              : "Unable to expire stale trade intents.";
+          return {
+            ok: false,
+            code: "stale_intent_cleanup_failed",
+            reason: message,
+            marketScan,
+          };
+        }
+      }
+
+      const defaultStake =
+        input.stake ?? input.config.systemLimits.minStake;
+      const attempts = await processAiCandidateTrades({
+        config: input.config,
+        identity: input.identity,
+        liveExecutionRequested: input.liveExecutionRequested === true,
+        defaultStake,
+        selectedCandidates,
+        markets: aiEligible,
+        nowSec,
+        persistIntent: deps.persistIntent,
+        executePersisted: deps.executePersisted,
+      });
+
+      if (attempts.length === 0) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason: "No AI candidates could be processed.",
+          marketScan,
+        };
+      }
+
+      const primary =
+        attempts.find((a) => a.ok && a.tradeId && a.decision && a.execution) ??
+        attempts.find((a) => a.tradeId && a.decision && a.execution) ??
+        null;
+
+      if (!primary || !primary.tradeId || !primary.decision || !primary.execution) {
+        return {
+          ok: false,
+          code: attempts[0]?.code ?? "no_enter_decision",
+          reason:
+            attempts[0]?.reasonDetail ??
+            "All AI candidates failed before execution.",
+          marketScan,
+          decision: attempts[0]?.decision,
+        };
+      }
+
+      return {
+        ok: true,
+        userId: userIdForSlots,
+        tradeId: primary.tradeId,
+        decision: primary.decision,
+        intentSymbol: primary.intentSymbol ?? primary.decision.asset,
+        stake: primary.stake,
+        execution: primary.execution,
+        marketScan,
+        trades: attempts,
+      };
     }
   }
 
@@ -587,6 +660,21 @@ export async function runTelegramTradeCycle(input: {
     liveExecutionRequested: input.liveExecutionRequested === true,
   });
 
+  const singleAttempt: CandidateTradeAttempt = {
+    marketId: decision.marketId,
+    asset: decision.asset,
+    direction: String(decision.direction),
+    stake: persisted.intent.stake,
+    limitPriceHint: decision.limitPriceHint,
+    tradeId,
+    intentSymbol: persisted.intent.symbol,
+    decision,
+    execution,
+    ok: execution.ok,
+    code: execution.ok ? undefined : execution.code,
+    reasonDetail: execution.ok ? undefined : execution.reason,
+  };
+
   return {
     ok: true,
     userId: persisted.userId,
@@ -596,5 +684,6 @@ export async function runTelegramTradeCycle(input: {
     stake: persisted.intent.stake,
     execution,
     marketScan,
+    trades: [singleAttempt],
   };
 }
