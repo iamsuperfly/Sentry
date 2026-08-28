@@ -279,7 +279,11 @@ export async function runTelegramTradeCycle(input: {
     );
     for (const m of oneMinCandidates) {
       try {
-        const { decision: oneMin } = await evaluateOneMinMarketWithBinance({
+        const {
+          decision: oneMin,
+          referencePrice,
+          currentPrice,
+        } = await evaluateOneMinMarketWithBinance({
           market: m,
           nowSec,
         });
@@ -288,8 +292,18 @@ export async function runTelegramTradeCycle(input: {
             strategy: "one-min-underlying-0.05pct-v1",
             marketId: m.marketId,
             asset: m.asset,
+            binanceSymbol:
+              m.asset.toUpperCase() === "BTC"
+                ? "BTCUSDT"
+                : m.asset.toUpperCase() === "ETH"
+                  ? "ETHUSDT"
+                  : null,
+            referencePrice,
+            currentPrice,
             action: oneMin.action,
+            direction: oneMin.action === "enter" ? oneMin.direction : undefined,
             code: oneMin.action === "skip" ? oneMin.code : undefined,
+            reason: oneMin.reason.slice(0, 160),
           },
           "1m strategy evaluation",
         );
@@ -396,6 +410,13 @@ export async function runTelegramTradeCycle(input: {
           marketsSupplied: aiResult.audit.marketsSupplied,
           decisionsReturned: aiResult.audit.decisionsReturned,
           snapshotHash: aiResult.audit.snapshotHash,
+          decisions: aiResult.decisions.map((d) => ({
+            marketId: d.marketId,
+            direction: d.direction,
+            confidence: d.confidence,
+            stake: d.stake,
+            reason: d.reason.slice(0, 160),
+          })),
         },
         "AI decisions received",
       );
@@ -432,7 +453,18 @@ export async function runTelegramTradeCycle(input: {
           provider: "groq",
           accepted: validation.accepted.length,
           rejected: validation.rejected.length,
-          rejectedCodes: validation.rejected.map((r) => r.code),
+          acceptedCandidates: validation.accepted.map((a) => ({
+            marketId: a.marketId,
+            direction: a.direction,
+            confidence: a.confidence,
+            stake: a.stake,
+            reason: a.reason.slice(0, 120),
+          })),
+          rejectedCandidates: validation.rejected.map((r) => ({
+            marketId: r.marketId,
+            code: r.code,
+            reason: r.reason.slice(0, 120),
+          })),
         },
         "AI deterministic validation complete",
       );
@@ -480,6 +512,20 @@ export async function runTelegramTradeCycle(input: {
       if (top.stake > 0) resolvedStake = top.stake;
       marketScan.selected = 1;
       decision = attachMarketWindowMeta(selected, snapshot.markets);
+      logger.info(
+        {
+          provider: "groq",
+          selectedMarketId: decision.marketId,
+          asset: decision.asset,
+          direction: decision.direction,
+          confidence: top.confidence,
+          stake: top.stake > 0 ? top.stake : resolvedStake,
+          limitPriceHint: decision.limitPriceHint,
+          reason: top.reason.slice(0, 160),
+          acceptedButNotSelected: ranked.slice(1).map((a) => a.marketId),
+        },
+        "AI final candidate selected for persist/execute",
+      );
     }
   }
 
