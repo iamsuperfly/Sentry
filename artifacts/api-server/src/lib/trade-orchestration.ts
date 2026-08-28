@@ -1,7 +1,7 @@
 /**
  * Production execution wiring (Stage 6 entry boundary).
  *
- * Production: 1m (Binance spot ±0.05%) then 15m+ Gemini → validate → risk → persist → execute.
+ * Production: 1m (Binance spot ±0.05%) then 15m+ Groq → validate → risk → persist → execute.
  * Unit tests may inject `evaluate` for the legacy edge-taker path.
  */
 
@@ -12,9 +12,9 @@ import type { LiveSubmitResult } from "./live-execution.ts";
 import type { StrategyDecision, StrategyRunResult } from "./strategy.ts";
 import { summarizeMarketIntelligence } from "./market-intelligence.ts";
 import {
-  callGeminiMarketDecisions,
-  isGeminiConfigured,
-} from "./gemini-client.ts";
+  callGroqMarketDecisions,
+  isGroqConfigured,
+} from "./groq-client.ts";
 import { validateAiCandidates } from "./ai-decision-validate.ts";
 import {
   geminiCandidateToStrategyDecision,
@@ -302,8 +302,8 @@ export async function runTelegramTradeCycle(input: {
           if (mapped) {
             marketScan.enterCandidates = 1;
             marketScan.selected = 1;
-            marketScan.aiConfigured = isGeminiConfigured({
-              apiKey: input.config.geminiApiKey,
+            marketScan.aiConfigured = isGroqConfigured({
+              apiKey: input.config.groqApiKey,
             });
             decision = attachMarketWindowMeta(mapped, snapshot.markets);
             oneMinSelected = true;
@@ -322,34 +322,34 @@ export async function runTelegramTradeCycle(input: {
     }
 
     if (!oneMinSelected) {
-      const geminiEligible = snapshot.markets.filter((m) =>
+      const aiEligible = snapshot.markets.filter((m) =>
         marketEligibleForGemini(m, nowSec),
       );
-      const geminiConfigured = isGeminiConfigured({
-        apiKey: input.config.geminiApiKey,
+      const groqConfigured = isGroqConfigured({
+        apiKey: input.config.groqApiKey,
       });
-      marketScan.aiConfigured = geminiConfigured;
+      marketScan.aiConfigured = groqConfigured;
 
-      if (!geminiConfigured) {
+      if (!groqConfigured) {
         logger.info(
-          { provider: "gemini", marketsEligible: geminiEligible.length },
-          "AI not configured — GEMINI_API_KEY missing",
+          { provider: "groq", marketsEligible: aiEligible.length },
+          "AI not configured — GROQ_API_KEY missing",
         );
         return {
           ok: false,
           code: "ai_not_configured",
           reason:
-            "AI not configured. Set GEMINI_API_KEY (and optional GEMINI_MODEL) on the server.",
+            "AI not configured. Set GROQ_API_KEY (and optional GROQ_MODEL) on the server.",
           marketScan,
         };
       }
 
-      if (geminiEligible.length === 0) {
+      if (aiEligible.length === 0) {
         return {
           ok: false,
           code: "no_enter_decision",
           reason:
-            "No 15m+ tradable markets with usable asks in this scan for Gemini.",
+            "No 15m+ tradable markets with usable asks in this scan for AI.",
           marketScan,
         };
       }
@@ -360,49 +360,48 @@ export async function runTelegramTradeCycle(input: {
       );
       marketScan.availableSlots = availableSlots;
 
-      const geminiInputs = geminiEligible.map((m) =>
-        toGeminiMarketInput(m, nowSec),
-      );
-      const geminiResult = await callGeminiMarketDecisions({
-        apiKey: input.config.geminiApiKey!,
-        model: input.config.geminiModel,
-        markets: geminiInputs,
+      const aiInputs = aiEligible.map((m) => toGeminiMarketInput(m, nowSec));
+      const aiResult = await callGroqMarketDecisions({
+        apiKey: input.config.groqApiKey!,
+        model: input.config.groqModel,
+        baseUrl: input.config.groqBaseUrl,
+        markets: aiInputs,
         availableSlots,
       });
 
-      if (!geminiResult.ok) {
+      if (!aiResult.ok) {
         logger.warn(
           {
-            provider: "gemini",
-            model: geminiResult.audit.model,
-            code: geminiResult.code,
-            latencyMs: geminiResult.audit.latencyMs,
-            marketsSupplied: geminiResult.audit.marketsSupplied,
+            provider: "groq",
+            model: aiResult.audit.model,
+            code: aiResult.code,
+            latencyMs: aiResult.audit.latencyMs,
+            marketsSupplied: aiResult.audit.marketsSupplied,
           },
           "AI request failed",
         );
         return {
           ok: false,
-          code: geminiResult.code,
-          reason: geminiResult.reason,
+          code: aiResult.code,
+          reason: aiResult.reason,
           marketScan,
         };
       }
 
       logger.info(
         {
-          provider: "gemini",
-          model: geminiResult.audit.model,
-          latencyMs: geminiResult.audit.latencyMs,
-          marketsSupplied: geminiResult.audit.marketsSupplied,
-          decisionsReturned: geminiResult.audit.decisionsReturned,
-          snapshotHash: geminiResult.audit.snapshotHash,
+          provider: "groq",
+          model: aiResult.audit.model,
+          latencyMs: aiResult.audit.latencyMs,
+          marketsSupplied: aiResult.audit.marketsSupplied,
+          decisionsReturned: aiResult.audit.decisionsReturned,
+          snapshotHash: aiResult.audit.snapshotHash,
         },
         "AI decisions received",
       );
 
       const validation = validateAiCandidates(
-        geminiResult.decisions.map((d) => ({
+        aiResult.decisions.map((d) => ({
           marketId: d.marketId,
           direction: d.direction,
           confidence: d.confidence,
@@ -410,7 +409,7 @@ export async function runTelegramTradeCycle(input: {
           stake: d.stake,
         })),
         {
-          markets: geminiEligible.map((m) => ({
+          markets: aiEligible.map((m) => ({
             marketId: m.marketId,
             tradable: m.tradable,
             finalized: m.finalized,
@@ -425,12 +424,12 @@ export async function runTelegramTradeCycle(input: {
         },
       );
 
-      marketScan.aiCandidates = geminiResult.decisions.length;
+      marketScan.aiCandidates = aiResult.decisions.length;
       marketScan.enterCandidates = validation.accepted.length;
 
       logger.info(
         {
-          provider: "gemini",
+          provider: "groq",
           accepted: validation.accepted.length,
           rejected: validation.rejected.length,
           rejectedCodes: validation.rejected.map((r) => r.code),
@@ -444,7 +443,7 @@ export async function runTelegramTradeCycle(input: {
           code: "no_enter_decision",
           reason:
             validation.rejected[0]?.reason ??
-            "Gemini returned no candidates that passed deterministic validation.",
+            "AI returned no candidates that passed deterministic validation.",
           marketScan,
         };
       }
@@ -453,12 +452,12 @@ export async function runTelegramTradeCycle(input: {
         (a, b) => b.confidence - a.confidence,
       );
       const top = ranked[0]!;
-      const market = geminiEligible.find((m) => m.marketId === top.marketId);
+      const market = aiEligible.find((m) => m.marketId === top.marketId);
       if (!market) {
         return {
           ok: false,
           code: "unknown_market",
-          reason: "Accepted Gemini marketId missing from snapshot.",
+          reason: "Accepted AI marketId missing from snapshot.",
           marketScan,
         };
       }
@@ -473,7 +472,7 @@ export async function runTelegramTradeCycle(input: {
           ok: false,
           code: "no_enter_decision",
           reason:
-            "Could not map Gemini decision to a tradable limit price from the book.",
+            "Could not map AI decision to a tradable limit price from the book.",
           marketScan,
         };
       }
