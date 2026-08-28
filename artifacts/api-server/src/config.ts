@@ -41,6 +41,9 @@ const envSchema = z.object({
   SYSTEM_MAX_DAILY_LOSS_TUSDC: z.string().optional(),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().optional(),
+  GROQ_API_KEY: z.string().optional(),
+  GROQ_MODEL: z.string().optional(),
+  GROQ_BASE_URL: z.string().optional(),
 });
 
 export type AppConfig = {
@@ -59,6 +62,9 @@ export type AppConfig = {
   systemLimits: SystemRiskLimits;
   geminiApiKey: string | null;
   geminiModel: string;
+  groqApiKey: string | null;
+  groqModel: string;
+  groqBaseUrl: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -99,5 +105,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     }),
     geminiApiKey: parsed.data.GEMINI_API_KEY?.trim() || null,
     geminiModel: parsed.data.GEMINI_MODEL?.trim() || "gemini-flash-latest",
+    groqApiKey: parsed.data.GROQ_API_KEY?.trim() || null,
+    groqModel: parsed.data.GROQ_MODEL?.trim() || "openai/gpt-oss-20b",
+    groqBaseUrl:
+      parsed.data.GROQ_BASE_URL?.trim() || "https://api.groq.com/openai/v1",
   };
 }
