@@ -31,6 +31,7 @@ function formatTradeScanLine(scan: {
   btc?: number;
   eth?: number;
   byDuration?: Record<string, number>;
+  availableSlots?: number;
   selected?: number;
 }): string {
   const parts = [
@@ -48,6 +49,9 @@ function formatTradeScanLine(scan: {
     parts.push(
       `1m=${d["1m"] ?? 0} 5m=${d["5m"] ?? 0} 15m=${d["15m"] ?? 0} 1h=${d["1h"] ?? 0} 4h=${d["4h"] ?? 0} 1d=${d["1d"] ?? 0}`,
     );
+  }
+  if (scan.availableSlots !== undefined) {
+    parts.push(`available slots: ${scan.availableSlots}`);
   }
   if (scan.selected !== undefined) parts.push(`selected: ${scan.selected}`);
   return parts.join(" · ");
@@ -78,6 +82,7 @@ import {
   formatTradeExecutionMessage,
   formatUserFacingTradeFailure,
 } from "../lib/telegram-trade-format";
+import { formatMultiTradeReply } from "../lib/telegram-multi-trade-reply";
 import { startFinalizationLoop } from "./finalization-loop";
 
 const active = new Set<number>();
@@ -463,42 +468,22 @@ export function createTelegramBot(config: AppConfig): Bot {
         );
         return;
       }
-      const exec = result.execution;
-      const decisionMeta = result.decision as {
-        tradingStart?: string;
-        intervalSec?: string | null;
-        expiry?: string;
-      };
-      const tradeMsg = formatTradeExecutionMessage({
-        tradeId: result.tradeId,
-        symbol: result.intentSymbol,
-        direction: String(result.decision.direction ?? "n/a"),
-        status: exec.ok ? String(exec.status) : "not submitted",
-        stake: result.stake,
-        limitPrice: result.decision.limitPriceHint,
-        transactionHash: exec.ok ? (exec.transactionHash ?? null) : null,
-        tradingStart: decisionMeta.tradingStart,
-        marketExpiry: result.decision.expiry,
-        intervalSec: decisionMeta.intervalSec,
-        explorerTxBaseUrl: config.explorerTxBaseUrl,
-      });
       const marketsLine = formatTradeScanLine(result.marketScan);
-      if (!exec.ok) {
-        const human = formatUserFacingTradeFailure({
-          code: exec.code,
-          reason: exec.reason,
-        });
-        await ctx.reply(
-          `${tradeMsg}\n${marketsLine}\n\n${human}\n\nMode: ${formatExecutionModeLabel(settings.executionMode)}`,
-          { link_preview_options: { is_disabled: true } },
-        );
-        return;
-      }
       await ctx.reply(
-        `${tradeMsg}\n${marketsLine}\nMode: ${formatExecutionModeLabel(settings.executionMode)}`,
-        {
-          link_preview_options: { is_disabled: true },
-        },
+        formatMultiTradeReply({
+          trades: result.trades ?? [],
+          fallback: {
+            tradeId: result.tradeId,
+            intentSymbol: result.intentSymbol,
+            decision: result.decision,
+            stake: result.stake,
+            execution: result.execution,
+          },
+          marketsLine,
+          executionMode: settings.executionMode,
+          explorerTxBaseUrl: config.explorerTxBaseUrl,
+        }),
+        { link_preview_options: { is_disabled: true } },
       );
     } catch (error) {
       await ctx.reply(
