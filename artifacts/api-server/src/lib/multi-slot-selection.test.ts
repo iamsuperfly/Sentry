@@ -1,11 +1,25 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { computeAvailableSlots } from "./multi-ai-execution.ts";
 
 describe("multi-slot selection math", () => {
   it("availableSlots = max(0, maxOpen - openCount)", () => {
-    assert.equal(Math.max(0, Math.min(4, 4) - 1), 3);
-    assert.equal(Math.max(0, Math.min(4, 4) - 3), 1);
-    assert.equal(Math.max(0, Math.min(4, 4) - 4), 0);
+    assert.equal(
+      computeAvailableSlots({ userMaxOpen: 4, systemMaxOpen: 4, openCount: 1 }),
+      3,
+    );
+    assert.equal(
+      computeAvailableSlots({ userMaxOpen: 4, systemMaxOpen: 4, openCount: 3 }),
+      1,
+    );
+    assert.equal(
+      computeAvailableSlots({ userMaxOpen: 4, systemMaxOpen: 4, openCount: 4 }),
+      0,
+    );
+    assert.equal(
+      computeAvailableSlots({ userMaxOpen: 10, systemMaxOpen: 4, openCount: 0 }),
+      4,
+    );
   });
 
   it("takes top N by confidence", () => {
@@ -26,8 +40,7 @@ describe("multi-slot selection math", () => {
 
   it("default stake applies per trade not shared", () => {
     const defaultStake = 30;
-    const n = 3;
-    const per = Array.from({ length: n }, () => defaultStake);
+    const per = Array.from({ length: 3 }, () => defaultStake);
     assert.equal(per.reduce((a, b) => a + b, 0), 90);
   });
 });
