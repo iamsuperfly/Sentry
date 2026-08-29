@@ -84,6 +84,7 @@ import {
 } from "../lib/telegram-trade-format";
 import { formatMultiTradeReply } from "../lib/telegram-multi-trade-reply";
 import { startFinalizationLoop } from "./finalization-loop";
+import { registerClaimCommand } from "./register-claim-command";
 
 const active = new Set<number>();
 const lastStart = new Map<number, number>();
@@ -686,6 +687,7 @@ export function createTelegramBot(config: AppConfig): Bot {
       await ctx.reply(`Unable to retrieve the private key.\n\nReason: ${safeError(error)}`);
     }
   });
+  registerClaimCommand(bot, config);
   bot.on("message:text", (ctx) =>
     ctx.reply("I do not recognize that command. Use /help."),
   );
