@@ -2,10 +2,12 @@ import { loadConfig } from "./config";
 import { createApp } from "./app";
 import { logger } from "./lib/logger";
 import { startTelegramBot } from "./telegram/bot";
+import { registerClaimCommand } from "./telegram/register-claim-command";
 
 const config = loadConfig();
 const app = createApp(config);
 const bot = startTelegramBot(config);
+registerClaimCommand(bot, config);
 
 const server = app.listen(config.port, (err) => {
   if (err) {
