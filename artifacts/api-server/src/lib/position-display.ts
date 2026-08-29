@@ -11,6 +11,7 @@ import {
   type DisplayTrade,
 } from "./telegram-trade-format.ts";
 import { OPEN_TRADE_STATUSES, TERMINAL_TRADE_STATUSES } from "./trade-state.ts";
+import { backfillMissingPnl } from "./pnl-backfill-persist.ts";
 
 /** Default number of terminal trades shown on /history. */
 export const HISTORY_DISPLAY_LIMIT = 5;
@@ -96,6 +97,11 @@ export async function listHistoryForDisplay(
   userId: string,
   limit = HISTORY_DISPLAY_LIMIT,
 ): Promise<DisplayTrade[]> {
+  try {
+    await backfillMissingPnl(config);
+  } catch {
+    // History still renders; reconstructed rows appear on the next request.
+  }
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
     .select(SELECT)
