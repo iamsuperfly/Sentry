@@ -27,6 +27,7 @@ import {
   type LiveExecutionDeps,
 } from "./live-execution.ts";
 import { claimPendingTrade, updateTradeExecution } from "./supabase.ts";
+import { levelFromBookSide } from "./preflight-book.ts";
 
 const erc20Abi = [
   {
@@ -71,7 +72,6 @@ function toBroadcastError(error: unknown, operation: string): LiveBroadcastError
   const hash = errorHash(error);
   const message =
     error instanceof Error ? error.message.slice(0, 240) : `${operation} failed`;
-  // A reverted receipt is a proven failure; send/RPC failures are not.
   const name =
     error && typeof error === "object" && "name" in error
       ? String((error as { name: unknown }).name)
@@ -191,6 +191,22 @@ export function createProductionLiveExecutionDeps(
       }
     },
 
+    readFreshBook: async ({ poolAddress, decimals }) => {
+      const client = exchange(config).client;
+      const book = await client.getBinaryOrderBook(address(poolAddress), {
+        depth: 5,
+        decimals,
+      });
+      const levels = (entries: Array<{ price: bigint; quantity: bigint }>) =>
+        entries.map(({ price, quantity }) => ({
+          price: price.toString(),
+          quantity: quantity.toString(),
+        }));
+      return {
+        yesAsk: levelFromBookSide(levels(book.yesAsks), decimals),
+        noAsk: levelFromBookSide(levels(book.noAsks), decimals),
+      };
+    },
     claimTrade: ({ tradeId, userId }) =>
       claimPendingTrade(config, { tradeId, userId }),
     updateTrade: (input) => updateTradeExecution(config, input),
