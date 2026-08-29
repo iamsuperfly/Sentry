@@ -512,6 +512,7 @@ export function createTelegramBot(config: AppConfig): Bot {
         "/positions — open positions only",
         "/history — completed, failed, or cancelled trades",
         "/stop — disable trading (history is kept)",
+        "/claim — redeem settled winning positions into tUSDC",
         "/fund — recover interrupted gas funding",
         "/privatekey — export private key (message auto-deletes)",
         "",

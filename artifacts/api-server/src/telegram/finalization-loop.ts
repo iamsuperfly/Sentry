@@ -15,6 +15,8 @@ import {
   listOpenTradesForFinalization,
   listTerminalTradesNeedingNotification,
 } from "../lib/trade-finalization";
+import { readResolvedMarketOnchain } from "../lib/resolved-market";
+import { backfillMissingPnl } from "../lib/pnl-backfill-persist";
 
 const TICK_MS = 45_000;
 
@@ -27,7 +29,6 @@ export function startFinalizationLoop(
   async function tick() {
     if (stopped) return;
     try {
-      // Load market snapshot once per tick for resolution evidence (winningOutcome, void).
       let marketById = new Map<
         string,
         ReturnType<typeof marketLifecycleFromDiagnostic>
@@ -45,14 +46,17 @@ export function startFinalizationLoop(
           {
             err: error instanceof Error ? error.message : String(error),
           },
-          "Finalization market snapshot failed; falling back to expiry-only",
+          "Finalization market snapshot failed; falling back to on-chain lookup",
         );
       }
 
       const open = await listOpenTradesForFinalization(config, { limit: 40 });
       for (const trade of open) {
         try {
-          const market = marketById.get(trade.marketId) ?? null;
+          let market = marketById.get(trade.marketId) ?? null;
+          if (!market) {
+            market = await readResolvedMarketOnchain(config, trade.marketId);
+          }
           await applyMarketResolveFinalization(config, trade, market);
         } catch (error) {
           logger.error(
@@ -63,6 +67,15 @@ export function startFinalizationLoop(
             "Market-resolve finalization failed",
           );
         }
+      }
+
+      try {
+        await backfillMissingPnl(config);
+      } catch (error) {
+        logger.error(
+          { err: error instanceof Error ? error.message : String(error) },
+          "PnL backfill failed",
+        );
       }
 
       const terminal = await listTerminalTradesNeedingNotification(config, {
@@ -104,7 +117,6 @@ export function startFinalizationLoop(
   const handle = setInterval(() => {
     void tick();
   }, TICK_MS);
-  // First pass shortly after boot (does not block startup).
   setTimeout(() => {
     void tick();
   }, 8_000);

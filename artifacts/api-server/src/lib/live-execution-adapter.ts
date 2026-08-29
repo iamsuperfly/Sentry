@@ -27,6 +27,8 @@ import {
   type LiveExecutionDeps,
 } from "./live-execution.ts";
 import { claimPendingTrade, updateTradeExecution } from "./supabase.ts";
+import { evaluatePreflightBook, levelFromBookSide } from "./preflight-book.ts";
+import { logger } from "./logger.ts";
 
 const erc20Abi = [
   {
@@ -71,7 +73,6 @@ function toBroadcastError(error: unknown, operation: string): LiveBroadcastError
   const hash = errorHash(error);
   const message =
     error instanceof Error ? error.message.slice(0, 240) : `${operation} failed`;
-  // A reverted receipt is a proven failure; send/RPC failures are not.
   const name =
     error && typeof error === "object" && "name" in error
       ? String((error as { name: unknown }).name)
@@ -93,6 +94,23 @@ async function makeTrader(config: AppConfig, privateKey: string): Promise<{
   const account = privateKeyToAccount(privateKey as Hex);
   const client = exchange(config);
   return { trader: client.client.createTrader({ privateKey: privateKey as Hex }), account };
+}
+
+async function readBook(config: AppConfig, poolAddress: string, decimals: number) {
+  const client = exchange(config).client;
+  const book = await client.getBinaryOrderBook(address(poolAddress), {
+    depth: 5,
+    decimals,
+  });
+  const levels = (entries: Array<{ price: bigint; quantity: bigint }>) =>
+    entries.map(({ price, quantity }) => ({
+      price: price.toString(),
+      quantity: quantity.toString(),
+    }));
+  return {
+    yesAsk: levelFromBookSide(levels(book.yesAsks), decimals),
+    noAsk: levelFromBookSide(levels(book.noAsks), decimals),
+  };
 }
 
 export function createProductionLiveExecutionDeps(
@@ -157,6 +175,48 @@ export function createProductionLiveExecutionDeps(
       privateKey,
       order,
     }): Promise<ChainWriteResult> => {
+      let fresh;
+      try {
+        fresh = await readBook(config, order.poolAddress, order.decimals);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message.slice(0, 200) : "Fresh book read failed.";
+        logger.warn(
+          { marketId: order.marketId, err: message },
+          "Pre-flight book read failed; skipping IOC",
+        );
+        return {
+          filledContracts: 0,
+          status: "failed",
+          errorMessage: message,
+        };
+      }
+      const pre = evaluatePreflightBook({
+        outcome: order.outcome,
+        limitPrice: order.limitPrice,
+        contracts: order.contracts,
+        book: fresh,
+      });
+      logger.info(
+        {
+          marketId: order.marketId,
+          side: order.outcome,
+          oldLimit: order.limitPrice,
+          freshAsk: pre.askPrice,
+          availableQuantity: pre.askQuantity,
+          decision: pre.ok ? "proceed" : "skip",
+          reason: pre.ok ? "fresh book executable" : pre.reason,
+        },
+        "Pre-flight order book",
+      );
+      if (!pre.ok) {
+        return {
+          filledContracts: 0,
+          status: "failed",
+          errorMessage: pre.reason,
+        };
+      }
+
       const { trader } = await makeTrader(config, privateKey);
       const decimals = order.decimals;
       const price = parseUnits(String(order.limitPrice), decimals);
