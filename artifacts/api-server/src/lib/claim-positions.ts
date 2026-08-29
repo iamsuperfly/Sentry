@@ -13,6 +13,10 @@ import {
   onchainToLifecycle,
   rawToHuman,
 } from "./resolved-market.ts";
+import {
+  parseOutcomeId,
+  resolveOutcomeTokenAddress,
+} from "./resolve-outcome-token.ts";
 import { getSupabaseClient } from "./supabase.ts";
 import { decryptPrivateKey } from "./wallet-crypto.ts";
 
@@ -58,11 +62,13 @@ export function formatClaimMessage(attempts: ClaimAttempt[]): string {
     return "No claimable positions found.";
   }
   const claimed = attempts.filter((a) => a.status === "claimed").length;
+  const skipped = attempts.filter((a) => a.status === "skipped").length;
   return [
     "Claim scan",
     "",
     `Found: ${attempts.length} settled positions`,
     `Claimed: ${claimed}`,
+    `Skipped: ${skipped}`,
     "",
     ...attempts.map((a, i) => `${i + 1}. ${formatClaimLine(a)}`),
   ].join("\n");
@@ -79,7 +85,7 @@ export async function listSettledTradesForClaim(
       "id, user_id, status, market_id, symbol, direction, stake_usdso, filled_contracts, contracts",
     )
     .eq("user_id", userId)
-    .in("status", ["settled", "redeemed"])
+    .eq("status", "settled")
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) throw new Error("Unable to list settled trades for claim.");
@@ -116,7 +122,7 @@ async function markTradeRedeemed(
     })
     .eq("id", input.tradeId)
     .eq("user_id", input.userId)
-    .in("status", ["settled", "redeemed"]);
+    .eq("status", "settled");
   if (error) throw new Error("Unable to mark trade redeemed.");
 }
 
@@ -143,17 +149,47 @@ export async function runUserClaimScan(input: {
         const onchain = await exchange.client.getMarketOnchain(
           trade.marketId as Hex,
         );
+        const token = resolveOutcomeTokenAddress(onchain);
+        if (!token.ok) {
+          attempts.push({
+            tradeId: trade.id,
+            marketId: trade.marketId,
+            symbol: trade.symbol,
+            direction: trade.direction,
+            status: "failed",
+            code: "missing_outcome_token",
+            reason: token.reason,
+          });
+          continue;
+        }
+        const yesId = parseOutcomeId(
+          (onchain as { yesId?: unknown }).yesId,
+        );
+        const noId = parseOutcomeId((onchain as { noId?: unknown }).noId);
+        if (yesId === null || noId === null) {
+          attempts.push({
+            tradeId: trade.id,
+            marketId: trade.marketId,
+            symbol: trade.symbol,
+            direction: trade.direction,
+            status: "skipped",
+            code: "missing_outcome_ids",
+            reason: "On-chain yesId/noId missing; cannot read outcome balance.",
+          });
+          continue;
+        }
+
         const lifecycle = onchainToLifecycle(trade.marketId, onchain);
         const decimals = onchain.decimals;
         const upRaw = await exchange.client.getOutcomeBalance(
-          onchain.outcomeToken as Address,
+          token.address,
           account.address,
-          onchain.yesId,
+          yesId,
         );
         const downRaw = await exchange.client.getOutcomeBalance(
-          onchain.outcomeToken as Address,
+          token.address,
           account.address,
-          onchain.noId,
+          noId,
         );
         const balances = {
           up: rawToHuman(upRaw, decimals),
@@ -175,6 +211,8 @@ export async function runUserClaimScan(input: {
           {
             tradeId: trade.id,
             marketId: trade.marketId,
+            outcomeToken: token.address,
+            outcomeTokenSource: token.source,
             outcomeIdx:
               decision.action === "redeem"
                 ? decision.outcomeIdx
