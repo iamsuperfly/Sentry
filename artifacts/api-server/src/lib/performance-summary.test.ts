@@ -154,6 +154,8 @@ test("performance message is compact", () => {
   });
   assert.match(text, /Today \(UTC\)/);
   assert.match(text, /\+12\.4 tUSDC/);
+  assert.match(text, /All time/);
+  assert.match(text, /\+47\.85 tUSDC/);
   assert.match(text, /Unclaimed/);
   assert.match(text, /Positions: 2/);
 });
