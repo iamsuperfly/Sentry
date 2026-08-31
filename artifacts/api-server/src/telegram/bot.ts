@@ -83,6 +83,8 @@ import {
   formatUserFacingTradeFailure,
 } from "../lib/telegram-trade-format";
 import { formatMultiTradeReply } from "../lib/telegram-multi-trade-reply";
+import { getPerformanceSummary } from "../lib/performance-persist";
+import { formatPerformanceMessage } from "../lib/performance-summary";
 import { startFinalizationLoop } from "./finalization-loop";
 import { registerClaimCommand } from "./register-claim-command";
 
@@ -507,7 +509,7 @@ export function createTelegramBot(config: AppConfig): Bot {
         "",
         "/start — create or resume your wallet",
         "/faucet <amount> — request tUSDC (up to 500/day UTC)",
-        "/status — wallet, balances, and trading state",
+        "/status — wallet, balances, trading state, and PnL",
         "/settings — view or change limits (e.g. max stake 30)",
         "/trade — evaluate markets and place a trade when conditions match",
         "/positions — open positions only",
@@ -633,13 +635,14 @@ export function createTelegramBot(config: AppConfig): Bot {
         first_name: ctx.from.first_name,
         last_name: ctx.from.last_name,
       };
-      const [current, allowance, settings, openCount, pnl] = await Promise.all([
-        balances(config, wallet.address),
-        getFaucetAllowance(config, wallet.user_id),
-        getUserSettingsForTelegram(config, identity),
-        getActiveOpenPositionCount(config, wallet.user_id),
-        getRealizedPnlToday(config, wallet.user_id),
-      ]);
+      const [current, allowance, settings, openCount, performance] =
+        await Promise.all([
+          balances(config, wallet.address),
+          getFaucetAllowance(config, wallet.user_id),
+          getUserSettingsForTelegram(config, identity),
+          getActiveOpenPositionCount(config, wallet.user_id),
+          getPerformanceSummary(config, wallet.user_id),
+        ]);
       await ctx.reply(
         [
           "Wallet status: ready",
@@ -656,7 +659,8 @@ export function createTelegramBot(config: AppConfig): Bot {
           `Max daily loss: ${settings.maxDailyLoss} tUSDC`,
           `Max open positions: ${settings.maxOpenPositions}`,
           `Open positions: ${openCount}`,
-          `PnL today (UTC): ${pnl} tUSDC`,
+          "",
+          formatPerformanceMessage(performance),
           "",
           `Faucet today: ${allowance.consumed} / 500 tUSDC`,
           `Remaining: ${allowance.remaining} tUSDC`,
