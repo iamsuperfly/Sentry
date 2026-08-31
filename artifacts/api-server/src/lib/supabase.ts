@@ -83,12 +83,14 @@ export async function ensureUser(
     .upsert({ user_id: data.id }, { onConflict: "user_id" });
   if (settingsError) throw new Error("Unable to save user settings.");
 
-  const inferred = inferTimezoneFromTelegramLanguage(from.language_code);
-  await client
-    .from("user_settings")
-    .update({ timezone: inferred, timezone_source: "auto" })
-    .eq("user_id", data.id)
-    .eq("timezone_source", "auto");
+  if (from.language_code && from.language_code.trim()) {
+    const inferred = inferTimezoneFromTelegramLanguage(from.language_code);
+    await client
+      .from("user_settings")
+      .update({ timezone: inferred, timezone_source: "auto" })
+      .eq("user_id", data.id)
+      .eq("timezone_source", "auto");
+  }
 
   return data.id as string;
 }
