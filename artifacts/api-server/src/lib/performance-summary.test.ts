@@ -103,6 +103,7 @@ test("summary aggregates all-time, daily, and unclaimed without double count", (
       },
     ],
     now,
+    "Africa/Lagos",
   );
 
   assert.equal(summary.allTimePnl, -13.12);
@@ -152,7 +153,8 @@ test("performance message is compact", () => {
     unclaimedPositions: 2,
     unclaimedValue: 34.48,
   });
-  assert.match(text, /Today \(UTC\)/);
+  assert.match(text, /Today/);
+  assert.doesNotMatch(text, /Today \(UTC\)/);
   assert.match(text, /\+12\.4 tUSDC/);
   assert.match(text, /All time/);
   assert.match(text, /\+47\.85 tUSDC/);
