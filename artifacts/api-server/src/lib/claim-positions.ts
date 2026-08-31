@@ -3,7 +3,7 @@
  * redeem winning (or void) balances via trader.redeem.
  */
 
-import { parseUnits, type Address, type Hex } from "viem";
+import { parseUnits, type Hex } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { AppConfig } from "../config.ts";
 import { logger } from "./logger.ts";
@@ -14,6 +14,7 @@ import {
   rawToHuman,
 } from "./resolved-market.ts";
 import {
+  outcomeBalanceParams,
   parseOutcomeId,
   resolveOutcomeTokenAddress,
 } from "./resolve-outcome-token.ts";
@@ -182,14 +183,18 @@ export async function runUserClaimScan(input: {
         const lifecycle = onchainToLifecycle(trade.marketId, onchain);
         const decimals = onchain.decimals;
         const upRaw = await exchange.client.getOutcomeBalance(
-          token.address,
-          account.address,
-          yesId,
+          outcomeBalanceParams({
+            outcomeToken: token.address,
+            account: account.address,
+            id: yesId,
+          }),
         );
         const downRaw = await exchange.client.getOutcomeBalance(
-          token.address,
-          account.address,
-          noId,
+          outcomeBalanceParams({
+            outcomeToken: token.address,
+            account: account.address,
+            id: noId,
+          }),
         );
         const balances = {
           up: rawToHuman(upRaw, decimals),
