@@ -1,6 +1,60 @@
 /** IANA timezone helpers for user-local calendar days. */
 
-export const DEFAULT_USER_TIMEZONE = "Africa/Lagos";
+/** Neutral fallback when Telegram does not expose a region. Not a product locale. */
+export const DEFAULT_USER_TIMEZONE = "UTC";
+
+const REGION_TIMEZONES: Record<string, string> = {
+  NG: "Africa/Lagos",
+  GH: "Africa/Accra",
+  KE: "Africa/Nairobi",
+  ZA: "Africa/Johannesburg",
+  EG: "Africa/Cairo",
+  US: "America/New_York",
+  CA: "America/Toronto",
+  MX: "America/Mexico_City",
+  BR: "America/Sao_Paulo",
+  GB: "Europe/London",
+  IE: "Europe/Dublin",
+  DE: "Europe/Berlin",
+  FR: "Europe/Paris",
+  ES: "Europe/Madrid",
+  IT: "Europe/Rome",
+  NL: "Europe/Amsterdam",
+  PL: "Europe/Warsaw",
+  PT: "Europe/Lisbon",
+  UA: "Europe/Kyiv",
+  RU: "Europe/Moscow",
+  TR: "Europe/Istanbul",
+  IN: "Asia/Kolkata",
+  PK: "Asia/Karachi",
+  BD: "Asia/Dhaka",
+  CN: "Asia/Shanghai",
+  JP: "Asia/Tokyo",
+  KR: "Asia/Seoul",
+  ID: "Asia/Jakarta",
+  PH: "Asia/Manila",
+  SG: "Asia/Singapore",
+  MY: "Asia/Kuala_Lumpur",
+  AE: "Asia/Dubai",
+  SA: "Asia/Riyadh",
+  AU: "Australia/Sydney",
+  NZ: "Pacific/Auckland",
+};
+
+const LANGUAGE_TIMEZONES: Record<string, string> = {
+  yo: "Africa/Lagos",
+  ig: "Africa/Lagos",
+  ha: "Africa/Lagos",
+  ja: "Asia/Tokyo",
+  ko: "Asia/Seoul",
+  th: "Asia/Bangkok",
+  vi: "Asia/Ho_Chi_Minh",
+  uk: "Europe/Kyiv",
+  ru: "Europe/Moscow",
+  tr: "Europe/Istanbul",
+  de: "Europe/Berlin",
+  zh: "Asia/Shanghai",
+};
 
 export function isValidIanaTimezone(zone: string): boolean {
   try {
@@ -15,6 +69,37 @@ export function normalizeTimezone(raw: string | null | undefined): string {
   const value = (raw ?? "").trim();
   if (!value) return DEFAULT_USER_TIMEZONE;
   return isValidIanaTimezone(value) ? value : DEFAULT_USER_TIMEZONE;
+}
+
+/**
+ * Best-effort timezone from Telegram User.language_code.
+ * Telegram bots do not receive the device IANA timezone.
+ * language_code is typically "en" or "en-US". Region tags can be mapped;
+ * bare English cannot, so we fall back to UTC rather than a single country.
+ */
+export function inferTimezoneFromTelegramLanguage(
+  languageCode: string | null | undefined,
+): string {
+  const raw = (languageCode ?? "").trim().replace(/_/g, "-");
+  if (!raw) return DEFAULT_USER_TIMEZONE;
+  const parts = raw.split("-").filter(Boolean);
+  const language = parts[0]?.toLowerCase() ?? "";
+  const region = [...parts].reverse().find((p) => /^[A-Za-z]{2}$/.test(p) && p === p.toUpperCase())
+    ?? parts.find((p) => p.length === 2 && p === p.toUpperCase())
+    ?? "";
+  const regionNorm = region.toUpperCase();
+  if (regionNorm && REGION_TIMEZONES[regionNorm]) {
+    return REGION_TIMEZONES[regionNorm];
+  }
+  // Second tag is often region even when not all-caps in some clients (en-ng).
+  if (parts[1] && parts[1].length === 2) {
+    const maybe = parts[1].toUpperCase();
+    if (REGION_TIMEZONES[maybe]) return REGION_TIMEZONES[maybe];
+  }
+  if (language && LANGUAGE_TIMEZONES[language]) {
+    return LANGUAGE_TIMEZONES[language];
+  }
+  return DEFAULT_USER_TIMEZONE;
 }
 
 export function calendarDateInZone(
@@ -34,9 +119,6 @@ export function calendarDateInZone(
   return `${year}-${month}-${day}`;
 }
 
-/**
- * Inclusive start / exclusive end of the local calendar day, as UTC ISO strings.
- */
 export function getZonedDayBounds(
   now: Date,
   timeZone: string,
@@ -44,10 +126,6 @@ export function getZonedDayBounds(
   const zone = normalizeTimezone(timeZone);
   const localDate = calendarDateInZone(now, zone);
   const startMs = zonedMidnightUtcMs(localDate, zone);
-  const [y, m, d] = localDate.split("-").map(Number);
-  const next = new Date(Date.UTC(y, m - 1, d + 1));
-  const nextDate = `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`;
-  // Adding one UTC calendar day is wrong across DST; walk until local date changes.
   let endMs = startMs + 36 * 60 * 60 * 1000;
   for (let offset = 20; offset <= 30; offset++) {
     const probe = new Date(startMs + offset * 60 * 60 * 1000);
@@ -57,7 +135,6 @@ export function getZonedDayBounds(
       break;
     }
   }
-  void nextDate;
   return {
     start: new Date(startMs).toISOString(),
     end: new Date(endMs).toISOString(),
