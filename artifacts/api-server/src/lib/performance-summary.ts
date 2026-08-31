@@ -3,6 +3,8 @@
  * Open/failed/unknown-PnL trades never invent numbers.
  */
 
+import { DEFAULT_USER_TIMEZONE, isInstantInLocalDay } from "./user-timezone.ts";
+
 export type PerformanceTrade = {
   status: string;
   pnl: number | null;
@@ -33,19 +35,6 @@ function finitePnl(value: number | null | undefined): number | null {
 function isResolvedStatus(status: string): boolean {
   const s = status.toLowerCase();
   return s === "settled" || s === "redeemed";
-}
-
-function inUtcDay(iso: string | null, now: Date): boolean {
-  if (!iso) return false;
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return false;
-  const start = Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate(),
-  );
-  const end = start + 86_400_000;
-  return t >= start && t < end;
 }
 
 export function classifySettledResult(input: {
@@ -84,6 +73,7 @@ export function unclaimedPayout(input: {
 export function summarizePerformance(
   trades: PerformanceTrade[],
   now = new Date(),
+  timeZone: string = DEFAULT_USER_TIMEZONE,
 ): PerformanceSummary {
   const summary: PerformanceSummary = {
     allTimePnl: 0,
@@ -115,7 +105,7 @@ export function summarizePerformance(
     if (pnl === null) continue;
     summary.reconstructedCount += 1;
     summary.allTimePnl += pnl;
-    if (inUtcDay(trade.settledAt, now)) summary.dailyPnl += pnl;
+    if (isInstantInLocalDay(trade.settledAt, now, timeZone)) summary.dailyPnl += pnl;
 
     const claimable = unclaimedPayout(trade);
     if (claimable !== null) {
@@ -139,7 +129,7 @@ export function formatPerformanceMessage(summary: PerformanceSummary): string {
   return [
     "Performance (Shannon testnet)",
     "",
-    "Today (UTC)",
+    "Today",
     `PnL: ${signed(summary.dailyPnl)} tUSDC`,
     "",
     "All time",

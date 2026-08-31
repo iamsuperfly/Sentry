@@ -19,7 +19,6 @@ import {
   type TradeIntent,
 } from "./execution.ts";
 import {
-  getUtcDayBounds,
   isTerminalTradeStatus,
   isStalePendingIntent,
   OPEN_TRADE_STATUSES,
@@ -27,6 +26,12 @@ import {
   type PendingIntentMarketState,
   sumRealizedPnl,
 } from "./trade-state.ts";
+import { setAutonomousEnabled } from "./autonomous-state.ts";
+import {
+  DEFAULT_USER_TIMEZONE,
+  getZonedDayBounds,
+  normalizeTimezone,
+} from "./user-timezone.ts";
 
 export type TelegramIdentity = {
   id: number;
@@ -34,6 +39,9 @@ export type TelegramIdentity = {
   first_name: string;
   last_name?: string;
 };
+
+const SETTINGS_COLUMNS =
+  "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso, timezone, autonomous_enabled, autonomous_paused_at";
 
 export async function expireStalePendingTradeIntents(
   config: AppConfig,
@@ -109,6 +117,9 @@ export async function expireStalePendingTradeIntentsForTelegram(
 
 export type PersistedUserSettings = UserRiskPreferences & {
   userId: string;
+  timezone: string;
+  autonomousEnabled: boolean;
+  autonomousPausedAt: string | null;
 };
 
 type SettingsRow = {
@@ -120,6 +131,9 @@ type SettingsRow = {
   max_daily_loss_usdso: string | number;
   max_open_positions: number;
   daily_profit_target_usdso: string | number | null;
+  timezone?: string | null;
+  autonomous_enabled?: boolean | null;
+  autonomous_paused_at?: string | null;
 };
 
 type PersistedTradeRow = {
@@ -167,6 +181,9 @@ function mapSettings(row: SettingsRow): PersistedUserSettings {
       row.daily_profit_target_usdso === null
         ? null
         : numeric(row.daily_profit_target_usdso, "daily_profit_target_usdso"),
+    timezone: normalizeTimezone(row.timezone ?? DEFAULT_USER_TIMEZONE),
+    autonomousEnabled: Boolean(row.autonomous_enabled),
+    autonomousPausedAt: row.autonomous_paused_at ?? null,
   };
 }
 
@@ -176,9 +193,7 @@ export async function getUserSettings(
 ): Promise<PersistedUserSettings> {
   const { data, error } = await getSupabaseClient(config)
     .from("user_settings")
-    .select(
-      "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
-    )
+    .select(SETTINGS_COLUMNS)
     .eq("user_id", userId)
     .maybeSingle();
 
@@ -187,9 +202,7 @@ export async function getUserSettings(
     const { data: created, error: createError } = await getSupabaseClient(config)
       .from("user_settings")
       .insert({ user_id: userId })
-      .select(
-        "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
-      )
+      .select(SETTINGS_COLUMNS)
       .single();
     if (createError || !created) throw new Error("Unable to create user settings.");
     return mapSettings(created as SettingsRow);
@@ -223,9 +236,7 @@ export async function saveUserSettings(
       },
       { onConflict: "user_id" },
     )
-    .select(
-      "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso",
-    )
+    .select(SETTINGS_COLUMNS)
     .single();
 
   if (error || !data) throw new Error("Unable to save user settings.");
@@ -259,8 +270,14 @@ export async function getRealizedPnlToday(
   config: AppConfig,
   userId: string,
   now = new Date(),
+  timeZone?: string,
 ): Promise<number> {
-  const { start, end } = getUtcDayBounds(now);
+  const zone =
+    timeZone ??
+    (await getUserSettings(config, userId).then((s) => s.timezone).catch(
+      () => DEFAULT_USER_TIMEZONE,
+    ));
+  const { start, end } = getZonedDayBounds(now, zone);
 
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
@@ -449,13 +466,12 @@ export async function createPersistedTradeIntent(input: {
   const wallet = await findWallet(input.config, input.identity.id);
   if (!wallet) throw new Error("User does not have a wallet.");
 
-  const [storedSettings, openPositionCount, realizedPnlToday, walletBalances] =
-    await Promise.all([
-      getUserSettings(input.config, userId),
-      getOpenPositionCount(input.config, userId),
-      getRealizedPnlToday(input.config, userId),
-      balances(input.config, wallet.address),
-    ]);
+  const storedSettings = await getUserSettings(input.config, userId);
+  const [openPositionCount, realizedPnlToday, walletBalances] = await Promise.all([
+    getOpenPositionCount(input.config, userId),
+    getRealizedPnlToday(input.config, userId, new Date(), storedSettings.timezone),
+    balances(input.config, wallet.address),
+  ]);
 
   const settings: UserRiskSettings = {
     ...storedSettings,
@@ -561,6 +577,7 @@ export async function disableTradingForTelegram(
 ): Promise<PersistedUserSettings> {
   const userId = await ensureUser(config, identity);
   const current = await getUserSettings(config, userId);
+  await setAutonomousEnabled(config, userId, false);
   return saveUserSettings(config, userId, {
     ...current,
     tradingEnabled: false,

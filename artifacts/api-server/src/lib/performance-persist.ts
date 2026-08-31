@@ -6,6 +6,7 @@ import {
   type PerformanceSummary,
   type PerformanceTrade,
 } from "./performance-summary.ts";
+import { DEFAULT_USER_TIMEZONE } from "./user-timezone.ts";
 
 export async function loadPerformanceTrades(
   config: AppConfig,
@@ -40,15 +41,17 @@ export async function getPerformanceSummary(
   config: AppConfig,
   userId: string,
   now = new Date(),
+  timeZone: string = DEFAULT_USER_TIMEZONE,
 ): Promise<PerformanceSummary> {
   const trades = await loadPerformanceTrades(config, userId);
-  return summarizePerformance(trades, now);
+  return summarizePerformance(trades, now, timeZone);
 }
 
 export async function formatUserPerformance(
   config: AppConfig,
   userId: string,
+  timeZone: string = DEFAULT_USER_TIMEZONE,
 ): Promise<string> {
-  const summary = await getPerformanceSummary(config, userId);
+  const summary = await getPerformanceSummary(config, userId, new Date(), timeZone);
   return formatPerformanceMessage(summary);
 }

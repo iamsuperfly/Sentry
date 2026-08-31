@@ -23,6 +23,7 @@ import {
 } from "../lib/supabase";
 import { decryptPrivateKey, encryptPrivateKey } from "../lib/wallet-crypto";
 import { runTelegramTradeCycle } from "../lib/trade-orchestration";
+import { startAutonomousLoop } from "../lib/autonomous-loop";
 
 function formatTradeScanLine(scan: {
   discovered: number;
@@ -79,7 +80,6 @@ import {
 } from "../lib/position-display";
 import {
   formatExecutionModeLabel,
-  formatTradeExecutionMessage,
   formatUserFacingTradeFailure,
 } from "../lib/telegram-trade-format";
 import { formatMultiTradeReply } from "../lib/telegram-multi-trade-reply";
@@ -87,6 +87,10 @@ import { getPerformanceSummary } from "../lib/performance-persist";
 import { formatPerformanceMessage } from "../lib/performance-summary";
 import { startFinalizationLoop } from "./finalization-loop";
 import { registerClaimCommand } from "./register-claim-command";
+import {
+  registerPhaseCommands,
+  resumeAutonomousIfEnabled,
+} from "./register-phase-commands";
 
 const active = new Set<number>();
 const lastStart = new Map<number, number>();
@@ -452,6 +456,13 @@ export function createTelegramBot(config: AppConfig): Bot {
         );
         return;
       }
+      if (settings.autonomousEnabled) {
+        await resumeAutonomousIfEnabled(
+          config,
+          settings.userId,
+          ctx.chat.id,
+        );
+      }
       const liveRequested = shouldRequestLiveExecution(settings.executionMode, true);
       const result = await runTelegramTradeCycle({
         config,
@@ -508,13 +519,16 @@ export function createTelegramBot(config: AppConfig): Bot {
         "DreamDEX Event Contracts bot",
         "",
         "/start — create or resume your wallet",
-        "/faucet <amount> — request tUSDC (up to 500/day UTC)",
+        "/faucet <amount> — request tUSDC (up to 500/local day)",
         "/status — wallet, balances, trading state, and PnL",
         "/settings — view or change limits (e.g. max stake 30)",
-        "/trade — evaluate markets and place a trade when conditions match",
+        "/trade — evaluate markets and place trades when conditions match",
+        "/auto on|off — opt-in 15-minute autonomous scans",
+        "/leaderboard — all-time top 10 plus your ranks",
+        "/timezone — set IANA timezone (default Africa/Lagos)",
         "/positions — open positions only",
         "/history — completed, failed, or cancelled trades",
-        "/stop — disable trading (history is kept)",
+        "/stop — disable trading and autonomous mode",
         "/claim — redeem settled winning positions into tUSDC",
         "/fund — recover interrupted gas funding",
         "/privatekey — export private key (message auto-deletes)",
@@ -557,7 +571,7 @@ export function createTelegramBot(config: AppConfig): Bot {
         last_name: ctx.from.last_name,
       });
       await ctx.reply(
-        `Trading disabled for your account.\n\nHistory and positions are kept.\nTrading enabled: ${settings.tradingEnabled}\n\nRe-enable with /settings trading on.`,
+        `Trading disabled for your account.\n\nAutonomous trading is also off.\nHistory and positions are kept.\nTrading enabled: ${settings.tradingEnabled}\n\nRe-enable with /settings trading on.`,
       );
     } catch (error) {
       await ctx.reply(`Unable to stop trading.\n\nReason: ${safeError(error)}`);
@@ -586,7 +600,7 @@ export function createTelegramBot(config: AppConfig): Bot {
       if (parsed.kind === "show") {
         const [openCount, pnl] = await Promise.all([
           getActiveOpenPositionCount(config, current.userId),
-          getRealizedPnlToday(config, current.userId),
+          getRealizedPnlToday(config, current.userId, new Date(), current.timezone),
         ]);
         await ctx.reply(
           formatUserSettings({
@@ -635,14 +649,13 @@ export function createTelegramBot(config: AppConfig): Bot {
         first_name: ctx.from.first_name,
         last_name: ctx.from.last_name,
       };
-      const [current, allowance, settings, openCount, performance] =
-        await Promise.all([
-          balances(config, wallet.address),
-          getFaucetAllowance(config, wallet.user_id),
-          getUserSettingsForTelegram(config, identity),
-          getActiveOpenPositionCount(config, wallet.user_id),
-          getPerformanceSummary(config, wallet.user_id),
-        ]);
+      const settings = await getUserSettingsForTelegram(config, identity);
+      const [current, allowance, openCount, performance] = await Promise.all([
+        balances(config, wallet.address),
+        getFaucetAllowance(config, wallet.user_id),
+        getActiveOpenPositionCount(config, wallet.user_id),
+        getPerformanceSummary(config, wallet.user_id, new Date(), settings.timezone),
+      ]);
       await ctx.reply(
         [
           "Wallet status: ready",
@@ -653,6 +666,8 @@ export function createTelegramBot(config: AppConfig): Bot {
           `tUSDC: ${current.tusdc}`,
           "",
           `Trading: ${settings.tradingEnabled ? "enabled" : "disabled"}`,
+          `Autonomous: ${settings.autonomousEnabled ? "on" : "off"}${settings.autonomousPausedAt ? " (paused for the day)" : ""}`,
+          `Timezone: ${settings.timezone}`,
           `Mode: ${formatExecutionModeLabel(settings.executionMode)}`,
           `Default stake: ${settings.defaultStake} tUSDC`,
           `Max stake: ${settings.maxTradeStake} tUSDC`,
@@ -664,7 +679,7 @@ export function createTelegramBot(config: AppConfig): Bot {
           "",
           `Faucet today: ${allowance.consumed} / 500 tUSDC`,
           `Remaining: ${allowance.remaining} tUSDC`,
-          "Allowance resets at the next UTC day.",
+          "Allowance resets at your local midnight.",
         ].join("\n"),
       );
     } catch (error) {
@@ -692,6 +707,7 @@ export function createTelegramBot(config: AppConfig): Bot {
     }
   });
   registerClaimCommand(bot, config);
+  registerPhaseCommands(bot, config);
   bot.on("message:text", (ctx) =>
     ctx.reply("I do not recognize that command. Use /help."),
   );
@@ -707,6 +723,7 @@ export function createTelegramBot(config: AppConfig): Bot {
 export function startTelegramBot(config: AppConfig): Bot {
   const bot = createTelegramBot(config);
   const finalization = startFinalizationLoop(bot, config);
+  const autonomous = startAutonomousLoop(bot, config);
   void bot
     .start({
       onStart: (info) =>
@@ -718,6 +735,7 @@ export function startTelegramBot(config: AppConfig): Bot {
   const originalStop = bot.stop.bind(bot);
   bot.stop = (...args: Parameters<typeof bot.stop>) => {
     finalization.stop();
+    autonomous.stop();
     return originalStop(...args);
   };
   return bot;

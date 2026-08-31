@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AppConfig } from "../config";
+import { inferTimezoneFromTelegramLanguage } from "./user-timezone.ts";
 
 let client: SupabaseClient | undefined;
 
@@ -58,6 +59,7 @@ export async function ensureUser(
     username?: string;
     first_name: string;
     last_name?: string;
+    language_code?: string;
   },
 ) {
   const client = getSupabaseClient(config);
@@ -80,6 +82,16 @@ export async function ensureUser(
     .from("user_settings")
     .upsert({ user_id: data.id }, { onConflict: "user_id" });
   if (settingsError) throw new Error("Unable to save user settings.");
+
+  if (from.language_code && from.language_code.trim()) {
+    const inferred = inferTimezoneFromTelegramLanguage(from.language_code);
+    await client
+      .from("user_settings")
+      .update({ timezone: inferred, timezone_source: "auto" })
+      .eq("user_id", data.id)
+      .eq("timezone_source", "auto");
+  }
+
   return data.id as string;
 }
 
@@ -158,11 +170,6 @@ export type TradeExecutionUpdate = {
   errorMessage?: string | null;
 };
 
-/**
- * Claim a pending intent exactly once. The status predicate is the concurrency
- * boundary: two workers can race, but only the worker that updates one row may
- * touch the chain.
- */
 export async function claimPendingTrade(
   config: AppConfig,
   input: { tradeId: string; userId: string },
@@ -217,10 +224,6 @@ export async function updateTradeExecution(
   }
 }
 
-/**
- * Close a stale pending intent only when it still has no broadcast or fill.
- * The conditional update makes cleanup safe against a concurrent executor.
- */
 export async function expirePendingTrade(
   config: AppConfig,
   input: { tradeId: string; userId: string; reason: string },
