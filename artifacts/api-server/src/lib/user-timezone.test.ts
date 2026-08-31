@@ -4,16 +4,37 @@ import {
   calendarDateInZone,
   DEFAULT_USER_TIMEZONE,
   getZonedDayBounds,
+  inferTimezoneFromTelegramLanguage,
   isInstantInLocalDay,
   isValidIanaTimezone,
   normalizeTimezone,
 } from "./user-timezone.ts";
 
-test("default and invalid zones normalize to Africa/Lagos", () => {
-  assert.equal(normalizeTimezone(null), DEFAULT_USER_TIMEZONE);
-  assert.equal(normalizeTimezone("Not/AZone"), DEFAULT_USER_TIMEZONE);
+test("unknown zones fall back to UTC, not Africa/Lagos", () => {
+  assert.equal(DEFAULT_USER_TIMEZONE, "UTC");
+  assert.equal(normalizeTimezone(null), "UTC");
+  assert.equal(normalizeTimezone("Not/AZone"), "UTC");
   assert.equal(isValidIanaTimezone("Africa/Lagos"), true);
   assert.equal(isValidIanaTimezone("America/New_York"), true);
+});
+
+test("Telegram language_code with region selects that region", () => {
+  assert.equal(inferTimezoneFromTelegramLanguage("en-US"), "America/New_York");
+  assert.equal(inferTimezoneFromTelegramLanguage("en-NG"), "Africa/Lagos");
+  assert.equal(inferTimezoneFromTelegramLanguage("en-ng"), "Africa/Lagos");
+  assert.equal(inferTimezoneFromTelegramLanguage("en-GB"), "Europe/London");
+  assert.equal(inferTimezoneFromTelegramLanguage("pt-BR"), "America/Sao_Paulo");
+});
+
+test("bare English cannot imply Nigeria or the US", () => {
+  assert.equal(inferTimezoneFromTelegramLanguage("en"), "UTC");
+  assert.equal(inferTimezoneFromTelegramLanguage(null), "UTC");
+  assert.equal(inferTimezoneFromTelegramLanguage(""), "UTC");
+});
+
+test("unambiguous language-only codes still map", () => {
+  assert.equal(inferTimezoneFromTelegramLanguage("yo"), "Africa/Lagos");
+  assert.equal(inferTimezoneFromTelegramLanguage("ja"), "Asia/Tokyo");
 });
 
 test("Lagos calendar day is UTC+1", () => {
