@@ -39,7 +39,7 @@ Not built yet: leaderboard, autonomous 15-minute trading loop, automatic claim, 
 - `/stop` — disable trading (history kept)
 - `/fund` — resume interrupted STT funding
 - `/privatekey` — export key (message auto-deletes)
-- `/help` 
+- `/help`
 
 ## How `/trade` decides
 
@@ -82,7 +82,7 @@ supabase/migrations/0008_finalization_notified.sql
 ```bash
 pnpm --filter @workspace/api-server run dev
 pnpm run typecheck
-pnm run build
+pnpm run build
 pnpm --filter @workspace/api-server run test
 ```
 
