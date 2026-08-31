@@ -1,5 +1,5 @@
 /**
- * Gemini → StrategyDecision mapping for 15m+ markets.
+ * AI → StrategyDecision mapping for 5m (final 120s) and 15m+ markets.
  * Pure helpers + orchestration-facing adapters. No secrets.
  */
 
@@ -16,8 +16,11 @@ import type { DreamdexMarketDiagnostic } from "./dreamdex.ts";
 export const GEMINI_STRATEGY_NAME = "gemini-v1";
 export const GEMINI_STRATEGY_VERSION = "1.0.0";
 
-/** Durations that use Gemini as the decision engine. */
+export const FIVE_MIN_AI_WINDOW_SEC = 120;
+
+/** Durations that use Groq/AI as the decision engine. */
 export const GEMINI_DURATION_BUCKETS = new Set([
+  "5m",
   "15m",
   "30m",
   "1h",
@@ -42,6 +45,7 @@ export function marketEligibleForGemini(
   if (!isGeminiDurationBucket(bucket)) return false;
   const left = secondsToExpiry(market.expiry, nowSec);
   if (left === null || left <= 60) return false;
+  if (bucket === "5m" && left > FIVE_MIN_AI_WINDOW_SEC) return false;
   const book = extractBookTop(market);
   return book.yesAsk !== null || book.noAsk !== null;
 }
