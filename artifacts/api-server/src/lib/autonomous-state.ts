@@ -135,7 +135,7 @@ export async function saveUserTimezone(
   const normalized = normalizeTimezone(timeZone);
   const { error } = await getSupabaseClient(config)
     .from("user_settings")
-    .update({ timezone: normalized })
+    .update({ timezone: normalized, timezone_source: "manual" })
     .eq("user_id", userId);
   if (error) throw new Error("Unable to save timezone.");
   return normalized;
