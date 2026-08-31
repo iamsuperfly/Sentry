@@ -1,141 +1,96 @@
-# DreamDEX Event Contracts Telegram Bot
+# Dream Event Bot
 
-A Telegram bot for onboarding users to dedicated wallets on the Somnia Shannon
-testnet and preparing those wallets for future DreamDEX Event Contracts
-trading. Wallet creation and testnet funding are implemented; the trading
-engine is still being built.
+Telegram bot for DreamDEX binary Event Contracts on **Somnia Shannon testnet** (chain ID `50312`).
+
+Users get a dedicated wallet, faucet tUSDC, scan live BTC/ETH markets, take trades, reconstruct settlement PnL, and redeem winning outcome tokens.
+
+## What works now
+
+- Wallet onboarding, STT gas sponsor, daily tUSDC faucet
+- Live market discovery via `@somnia-chain/markets-sdk` `0.28.1`
+- `/trade` multi-slot execution (independent trades, per-trade stake, isolated IOC failures)
+- **1m markets:** Binance public spot ±0.05% strategy in the final window
+- **15m+ markets:** Groq (`openai/gpt-oss-20b`) ranks eligible markets; deterministic validation + risk still decide what executes
+- `/positions`, `/history` (reconstructed win/loss PnL), `/status` (today + all-time PnL, unclaimed, wins/losses)
+- `/claim` redeem of finalized winning (or void) ERC-6909 balances via `trader.redeem`
+- Paper vs testnet mode; live chain submit still gated by `ENABLE_LIVE_EXECUTION`
+
+Not built yet: leaderboard, autonomous 15-minute trading loop, automatic claim, 5m AI eligibility.
 
 ## Technology
 
-- Node.js 24 and TypeScript
-- grammY for Telegram bot interactions
-- Express 5 for the backend HTTP server
-- Supabase for server-side persistence
-- viem for EVM wallet and blockchain operations
-- `@somnia-chain/markets-sdk` for Event Contract market data
-- Zod for runtime configuration validation
-- esbuild for production builds
-
-## Current onboarding flow
-
-When a user runs `/start`, the bot:
-
-1. Creates one dedicated EVM wallet for the Telegram user.
-2. Encrypts the private key with AES-256-GCM before storing it in Supabase.
-3. Sends `0.1 STT` from the treasury wallet to the new wallet.
-4. Tracks the STT transaction and reports its status with an explorer link.
-5. Shows the resulting live balances and explains how to request tUSDC.
-
-If onboarding is interrupted, `/start` reuses the existing wallet and resumes
-the missing STT funding step. `/fund` provides the same manual recovery path.
-Confirmed transactions are preserved and pending transactions are not
-resubmitted.
-
-## Network and tokens
-
-All current wallet activity is restricted to the **Somnia Shannon testnet**:
-
-- Chain ID: `50312`
-- RPC: `https://dream-rpc.somnia.network`
-- Explorer: `https://shannon-explorer.somnia.network`
-
-The bot uses:
-
-- `STT` for Somnia testnet gas
-- `tUSDC` from the configured testnet faucet
-- Default initial funding of `0.1 STT`
-- A maximum faucet allowance of `500 tUSDC` per Telegram user per UTC day
-
-The tUSDC contract address is:
-
-```text
-0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E
-```
+- Node.js + TypeScript, pnpm workspace
+- grammY (Telegram), Express 5 (health + diagnostics)
+- Supabase persistence
+- viem + `@somnia-chain/markets-sdk`
+- Groq OpenAI-compatible API for 15m+ decisions
+- Binance public ticker for 1m only (no API key)
 
 ## Telegram commands
 
-- `/start` — create a wallet or resume onboarding
-- `/faucet <amount>` — request tUSDC, up to 500 per UTC day
-- `/status` — view wallet address, live balances, and faucet allowance
-- `/fund` — manually resume interrupted STT funding
-- `/privatekey` — retrieve the encrypted wallet's private key; the Telegram message is protected and scheduled for deletion
-- `/help` — show available commands
+- `/start` — create or resume the dedicated wallet
+- `/faucet <amount>` — request tUSDC (500 / UTC day)
+- `/status` — wallet, balances, settings, today + all-time PnL
+- `/settings` — stake, max stake, daily loss, open positions, paper/testnet, trading on/off
+- `/trade` — one scan: 1m Binance if applicable, otherwise Groq 15m+
+- `/positions` — open positions on markets that have not expired
+- `/history` — latest completed trades with reconstructed PnL
+- `/claim` — redeem settled winning outcome tokens into tUSDC
+- `/stop` — disable trading (history kept)
+- `/fund` — resume interrupted STT funding
+- `/privatekey` — export key (message auto-deletes)
+- `/help`
 
-## Stage 1 read-only DreamDEX diagnostics
-
-The server exposes a read-only market diagnostic at:
-
-```text
-GET /api/dreamdex/markets
-GET /api/dreamdex/markets?asset=BTC
-GET /api/dreamdex/markets?asset=ETH
-```
-
-It uses `@somnia-chain/markets-sdk` `0.28.1` with the official Somnia Shannon
-configuration (chain ID `50312`) to discover binary markets, keep only BTC and
-ETH, read each market by its `marketId`, resolve the current pool/window
-binding, read authoritative on-chain status, and read the four-sided order
-book. A market is marked `tradable` only when both the indexer status is
-`Trading` and the live on-chain status is `1`.
-
-This endpoint performs no approvals, orders, minting, merging, redemption,
-funding, or database writes. It is intentionally separate from Telegram
-handlers and wallet/funding code.
-
-## Stage 2 strategy decisions (no execution)
+## How `/trade` decides
 
 ```text
-GET /api/dreamdex/decisions
-GET /api/dreamdex/decisions?asset=BTC
-GET /api/dreamdex/decisions?asset=ETH
+market discovery
+  → 1m final window → Binance public price → ±0.05% rule
+  → otherwise 15m+ eligible markets → Groq
+  → deterministic AI validation
+  → risk (user + system)
+  → persist one intent per selected market
+  → independent IOC execution
 ```
 
-Pure strategy layer (`edge-taker-v1`) consumes Stage 1 market snapshots and
-emits structured `enter` / `skip` decisions for BTC and ETH Event Contracts.
+Groq cannot bypass stake limits, slot caps, daily loss/profit stops, or `ENABLE_LIVE_EXECUTION`. Missing `GROQ_API_KEY` fails closed (`ai_not_configured`). There is no hardcoded strategy fallback when AI fails.
 
-Default rules:
+Settlement PnL is reconstructed from on-chain `winningOutcome` + filled contracts. Claiming converts a 6909 balance into tUSDC; it does **not** add extra PnL.
 
-- Fair probability `0.5`; edge threshold `0.08`
-- Enter **YES** when best YES ask ≤ `0.42`
-- Enter **NO** when best NO ask ≤ `0.42`, or YES ask ≥ `0.58`
-- Skip: unsupported asset, finalized, not tradable, expired, &lt; 5 minutes to
-  expiry, empty asks, YES spread &gt; `0.10`, or no edge
+## Network
 
-No private keys, approvals, or orders. Future Stage 3 execution can consume the
-decision objects (`marketId`, direction, `limitPriceHint`, edge, book tops).
-
-Unit tests: `pnpm --filter @workspace/api-server run test`
+- RPC: `https://dream-rpc.somnia.network`
+- Explorer: `https://shannon-explorer.somnia.network`
+- tUSDC: `0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E`
+- Shared OutcomeToken6909: `0xB52c5934113Af5c0Bb20eb3C72290C8215f755b9`
 
 ## Setup
 
-Install dependencies with pnpm, then apply the Supabase migrations manually in
-this order:
+Apply Supabase migrations in order:
 
 ```text
 supabase/migrations/0001_initial_schema.sql
 supabase/migrations/0002_wallet_funding.sql
 supabase/migrations/0003_faucet_daily_allowance.sql
+supabase/migrations/0004_trade_execution.sql
+supabase/migrations/0005_daily_profit_target.sql
+supabase/migrations/0006_trade_reconciliation.sql
+supabase/migrations/0007_execution_mode_settings.sql
+supabase/migrations/0008_finalization_notified.sql
 ```
-
-Run the API server with:
 
 ```bash
 pnpm --filter @workspace/api-server run dev
-```
-
-The server listens on port `5000` by default. For checks and production
-builds:
-
-```bash
 pnpm run typecheck
 pnpm run build
 pnpm --filter @workspace/api-server run test
 ```
 
-## Required environment variables
+Default API port is `5000`.
 
-Keep these values in Replit Secrets or another server-side secret manager.
-Never commit real values:
+## Environment
+
+Required:
 
 ```text
 TELEGRAM_BOT_TOKEN
@@ -145,30 +100,40 @@ TREASURY_PRIVATE_KEY
 WALLET_ENCRYPTION_KEY
 ```
 
-`WALLET_ENCRYPTION_KEY` must decode to 32 bytes as either a 64-character hex
-value or a base64 value.
-
-Optional configuration variables and their defaults:
+Trading / AI:
 
 ```text
-PORT=5000
-SOMNIA_RPC_URL=https://dream-rpc.somnia.network
-DREAMDEX_INDEXER_URL=https://dev.smk.somnia.host/v1/graphql
-SOMNIA_WS_RPC_URL=wss://api.infra.testnet.somnia.network/ws
-INITIAL_GAS_SPONSOR_AMOUNT=0.1
-EXPLORER_TX_BASE_URL=https://shannon-explorer.somnia.network/tx
+ENABLE_LIVE_EXECUTION=true   # required for real Shannon orders
+GROQ_API_KEY
+GROQ_MODEL=openai/gpt-oss-20b   # optional
 ```
 
-The treasury wallet must hold enough Somnia testnet STT to sponsor new user
-wallets and pay transaction gas. The Supabase service-role key is used only by
-the backend and must not be exposed to clients.
+Optional system ceilings (defaults: min stake 1, max stake 200, max open 5, max daily loss 70 tUSDC):
+
+```text
+SYSTEM_MIN_STAKE_TUSDC
+SYSTEM_MAX_STAKE_TUSDC
+SYSTEM_MAX_OPEN_POSITIONS
+SYSTEM_MAX_DAILY_LOSS_TUSDC
+```
+
+No Binance API key. Do not commit secrets.
+
+## Diagnostics HTTP
+
+```text
+GET /api/dreamdex/markets
+GET /api/dreamdex/decisions
+```
+
+Read-only. Telegram trading does not go through these routes.
 
 ## Roadmap
 
-- [x] Stage 0 — wallet onboarding, STT sponsor, durable tUSDC faucet
-- [x] Stage 1 — Event Contract market discovery and order books
-- [x] Stage 2 — rule-based strategy decisions (this layer)
-- [ ] Stage 3 — order execution, fills, settlement, redemption
-- [ ] User-facing trade history and performance reporting
-
-Trading and order execution are not currently enabled.
+- [x] Wallet, faucet, market discovery
+- [x] Risk + persistence + gated live IOC execution
+- [x] Multi-slot `/trade`, Groq 15m+, Binance 1m
+- [x] PnL reconstruction, `/claim`, `/status` dashboard
+- [ ] Leaderboard
+- [ ] Opt-in autonomous trading + coupled auto-claim
+- [ ] 5m markets in the AI pipeline
