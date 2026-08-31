@@ -1,21 +1,27 @@
 -- User IANA timezone + autonomous trading flags.
 -- Daily faucet / PnL / leaderboard / auto cutoff use this timezone.
--- Default Africa/Lagos (WAT, no DST).
+-- Default UTC until Telegram language_code (or /timezone) sets a real zone.
+-- Telegram bots do not receive device timezone.
 
 alter table public.user_settings
-  add column if not exists timezone text not null default 'Africa/Lagos',
+  add column if not exists timezone text not null default 'UTC',
+  add column if not exists timezone_source text not null default 'auto',
   add column if not exists autonomous_enabled boolean not null default false,
   add column if not exists autonomous_paused_at timestamptz,
   add column if not exists last_autonomous_scan_at timestamptz,
   add column if not exists last_autonomous_local_date date,
   add column if not exists telegram_chat_id bigint;
 
+alter table public.user_settings
+  drop constraint if exists user_settings_timezone_source_check;
+alter table public.user_settings
+  add constraint user_settings_timezone_source_check
+  check (timezone_source in ('auto', 'manual'));
+
 comment on column public.user_settings.timezone is
-  'IANA timezone used for the user local calendar day (faucet, daily PnL, daily loss, leaderboard today, autonomous cutoff).';
-comment on column public.user_settings.autonomous_enabled is
-  'Opt-in 15-minute trading loop. Manual /trade always works independently.';
-comment on column public.user_settings.autonomous_paused_at is
-  'Set when autonomous trading stops at the user local midnight. Cleared by /auto on or /trade.';
+  'IANA timezone for the user local calendar day (faucet, daily PnL, daily loss, leaderboard today, autonomous cutoff).';
+comment on column public.user_settings.timezone_source is
+  'auto = inferred from Telegram language_code; manual = set via /timezone.';
 
 create or replace function public.get_faucet_allowance(p_user_id uuid)
 returns table (
@@ -39,18 +45,18 @@ begin
     raise exception 'Telegram user was not found or is inactive' using errcode = 'P0001';
   end if;
 
-  select coalesce(nullif(timezone, ''), 'Africa/Lagos')
+  select coalesce(nullif(timezone, ''), 'UTC')
     into user_tz
     from public.user_settings
    where user_id = p_user_id;
   if user_tz is null then
-    user_tz := 'Africa/Lagos';
+    user_tz := 'UTC';
   end if;
 
   begin
     day_start := (date_trunc('day', timezone(user_tz, now())) at time zone user_tz);
   exception when others then
-    user_tz := 'Africa/Lagos';
+    user_tz := 'UTC';
     day_start := (date_trunc('day', timezone(user_tz, now())) at time zone user_tz);
   end;
 
@@ -112,18 +118,18 @@ begin
     raise exception 'Wallet does not belong to this Telegram user' using errcode = 'P0001';
   end if;
 
-  select coalesce(nullif(timezone, ''), 'Africa/Lagos')
+  select coalesce(nullif(timezone, ''), 'UTC')
     into user_tz
     from public.user_settings
    where user_id = p_user_id;
   if user_tz is null then
-    user_tz := 'Africa/Lagos';
+    user_tz := 'UTC';
   end if;
 
   begin
     day_start := (date_trunc('day', timezone(user_tz, now())) at time zone user_tz);
   exception when others then
-    user_tz := 'Africa/Lagos';
+    user_tz := 'UTC';
     day_start := (date_trunc('day', timezone(user_tz, now())) at time zone user_tz);
   end;
 
