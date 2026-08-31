@@ -10,6 +10,13 @@ export type ResolvedOutcomeToken =
   | { ok: true; address: Address; source: OutcomeTokenSource }
   | { ok: false; reason: string };
 
+/** SDK 0.28.1 GetOutcomeBalanceParams — must be an object, not positional args. */
+export type OutcomeBalanceParams = {
+  outcomeToken: Address;
+  account: Address;
+  id: bigint;
+};
+
 function asAddress(value: unknown): Address | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -50,4 +57,22 @@ export function parseOutcomeId(value: unknown): bigint | null {
     }
   }
   return null;
+}
+
+/**
+ * Build the single-argument payload markets-sdk 0.28.1 expects:
+ * getOutcomeBalance({ outcomeToken, account, id }).
+ * Positional (token, account, id) makes p.outcomeToken undefined and viem
+ * throws Address "undefined" is invalid.
+ */
+export function outcomeBalanceParams(input: {
+  outcomeToken: Address;
+  account: Address;
+  id: bigint;
+}): OutcomeBalanceParams {
+  return {
+    outcomeToken: input.outcomeToken,
+    account: input.account,
+    id: input.id,
+  };
 }
