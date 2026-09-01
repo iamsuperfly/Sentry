@@ -1,13 +1,6 @@
--- Per-user IANA timezone is retired. Daily faucet / PnL / leaderboard / auto
--- cutoff use UTC midnight. Autonomous columns from 0009 stay.
--- Safe if 0009 already ran: drop timezone columns if present.
-
-alter table public.user_settings
-  drop column if exists timezone,
-  drop column if exists timezone_source;
-
-alter table public.user_settings
-  drop constraint if exists user_settings_timezone_source_check;
+-- Daily faucet / PnL / leaderboard / auto cutoff are UTC.
+-- Do not drop timezone columns here: existing settings SELECTs still name them.
+-- Application code ignores stored timezone values.
 
 create or replace function public.get_faucet_allowance(p_user_id uuid)
 returns table (
