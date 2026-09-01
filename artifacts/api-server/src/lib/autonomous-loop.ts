@@ -14,11 +14,13 @@ import {
   shouldRunAutonomousTick,
 } from "./autonomous-state.ts";
 import { calendarDateInZone } from "./user-timezone.ts";
-import { getPerformanceSummary } from "./performance-persist.ts";
+import {
+  getPerformanceSummary,
+  listUtcDayTradeStatuses,
+} from "./performance-persist.ts";
 import {
   getRealizedPnlToday,
   getUserSettings,
-  listUtcDayTradeStatuses,
 } from "./trade-persistence.ts";
 import {
   evaluateDayHalt,
