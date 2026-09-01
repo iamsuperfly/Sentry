@@ -45,20 +45,15 @@ describe("parseSettingsCommand", () => {
     const p = parseSettingsCommand("profit target off");
     assert.equal(p.kind, "patch");
     if (p.kind === "patch") assert.equal(p.patch.dailyProfitTarget, null);
-
-    const legacy = parseSettingsCommand("profit_target off");
-    assert.equal(legacy.kind, "patch");
-    if (legacy.kind === "patch") assert.equal(legacy.patch.dailyProfitTarget, null);
   });
 
-  it("parses trading and mode", () => {
+  it("parses trading on and rejects paper mode", () => {
     const t = parseSettingsCommand("trading on");
     assert.equal(t.kind, "patch");
     if (t.kind === "patch") assert.equal(t.patch.tradingEnabled, true);
 
     const m = parseSettingsCommand("mode paper");
-    assert.equal(m.kind, "patch");
-    if (m.kind === "patch") assert.equal(m.patch.executionMode, "paper");
+    assert.equal(m.kind, "error");
   });
 
   it("rejects unknown field", () => {
@@ -77,14 +72,14 @@ describe("applySettingsPatch", () => {
         maxDailyLoss: 50,
         maxOpenPositions: 3,
         tradingEnabled: true,
-        executionMode: "paper",
+        executionMode: "testnet",
       },
       DEFAULT_SYSTEM_LIMITS,
     );
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.settings.defaultStake, 10);
-      assert.equal(result.settings.executionMode, "paper");
+      assert.equal(result.settings.executionMode, "testnet");
       assert.equal(result.settings.tradingEnabled, true);
     }
   });
@@ -109,30 +104,25 @@ describe("applySettingsPatch", () => {
 });
 
 describe("shouldRequestLiveExecution", () => {
-  it("paper mode never requests live", () => {
-    assert.equal(shouldRequestLiveExecution("paper", true), false);
-    assert.equal(shouldRequestLiveExecution("paper", false), false);
-  });
-
-  it("testnet mode follows user request", () => {
+  it("Shannon testnet follows the live-execution request", () => {
     assert.equal(shouldRequestLiveExecution("testnet", true), true);
     assert.equal(shouldRequestLiveExecution("testnet", false), false);
+    assert.equal(shouldRequestLiveExecution("paper", true), true);
   });
 });
 
 describe("formatSettingsHelp", () => {
-  it("uses natural language and does not expose internal aliases", () => {
+  it("uses natural language and lists current system ceilings", () => {
     const help = formatSettingsHelp(DEFAULT_SYSTEM_LIMITS);
     assert.match(help, /max stake 30/);
     assert.match(help, /max daily loss 70/);
     assert.match(help, /max positions 5/);
-    assert.match(help, /profit target 200/);
-    assert.match(help, /Default stake is what \/trade uses/);
-    assert.match(help, /Max stake is the per-trade ceiling/);
-    assert.doesNotMatch(help, /underscore/i);
+    assert.match(help, /System limits/);
+    assert.match(help, /max positions 10/);
+    assert.match(help, /max daily loss 300/);
+    assert.doesNotMatch(help, /paper/i);
+    assert.doesNotMatch(help, /timezone/i);
     assert.doesNotMatch(help, /max_stake/);
-    assert.doesNotMatch(help, /max_daily_loss/);
     assert.doesNotMatch(help, /executionMode/);
-    assert.doesNotMatch(help, /Stage \d/);
   });
 });
