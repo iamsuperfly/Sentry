@@ -6,7 +6,10 @@ import {
   type PerformanceSummary,
   type PerformanceTrade,
 } from "./performance-summary.ts";
-import { DEFAULT_USER_TIMEZONE } from "./user-timezone.ts";
+import {
+  DEFAULT_USER_TIMEZONE,
+  getZonedDayBounds,
+} from "./user-timezone.ts";
 
 export async function loadPerformanceTrades(
   config: AppConfig,
@@ -35,6 +38,24 @@ export async function loadPerformanceTrades(
       settledAt: (r.settled_at as string | null) ?? null,
     };
   });
+}
+
+export async function listUtcDayTradeStatuses(
+  config: AppConfig,
+  userId: string,
+  now = new Date(),
+): Promise<Array<{ status: string }>> {
+  const { start, end } = getZonedDayBounds(now, DEFAULT_USER_TIMEZONE);
+  const { data, error } = await getSupabaseClient(config)
+    .from("trades")
+    .select("status")
+    .eq("user_id", userId)
+    .gte("created_at", start)
+    .lt("created_at", end);
+  if (error) throw new Error("Unable to read today's trades.");
+  return (data ?? []).map((row) => ({
+    status: String((row as { status?: string }).status ?? ""),
+  }));
 }
 
 export async function getPerformanceSummary(
