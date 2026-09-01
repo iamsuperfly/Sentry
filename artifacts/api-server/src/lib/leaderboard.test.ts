@@ -26,7 +26,7 @@ test("failed trades do not rank", () => {
         settledAt: "2026-08-31T12:00:00.000Z",
       },
     ],
-    { now, timeZone: "Africa/Lagos", daily: false },
+    { now, timeZone: "UTC", daily: false },
   );
   assert.equal(ranked.length, 1);
   assert.equal(ranked[0]?.displayName, "@bob");
@@ -54,13 +54,13 @@ test("tie uses later settled_at", () => {
         settledAt: "2026-08-31T12:00:00.000Z",
       },
     ],
-    { now, timeZone: "Africa/Lagos", daily: false },
+    { now, timeZone: "UTC", daily: false },
   );
   assert.equal(ranked[0]?.userId, "b");
   assert.equal(ranked[1]?.userId, "a");
 });
 
-test("daily board uses Lagos day", () => {
+test("daily board uses UTC day", () => {
   const ranked = aggregateLeaderboard(
     [
       {
@@ -75,11 +75,11 @@ test("daily board uses Lagos day", () => {
     ],
     {
       now: new Date("2026-08-31T10:00:00.000Z"),
-      timeZone: "Africa/Lagos",
+      timeZone: "UTC",
       daily: true,
     },
   );
-  assert.equal(ranked.length, 1);
+  assert.equal(ranked.length, 0);
 });
 
 test("display falls back to first name", () => {
