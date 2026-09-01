@@ -40,13 +40,6 @@ function parseOnOff(raw: string): boolean | { error: string } {
   return { error: "Use on or off." };
 }
 
-function parseMode(raw: string): ExecutionMode | { error: string } {
-  const v = raw.trim().toLowerCase();
-  if (v === "paper") return "paper";
-  if (v === "testnet") return "testnet";
-  return { error: "Mode must be paper or testnet." };
-}
-
 type FieldMatch = {
   field:
     | "stake"
@@ -59,9 +52,6 @@ type FieldMatch = {
   value: string;
 };
 
-/**
- * Match multi-word field names first, then single-token / underscore aliases.
- */
 function matchSettingsField(text: string): FieldMatch | null {
   const lower = text.trim().toLowerCase();
   if (!lower) return null;
@@ -115,9 +105,6 @@ function matchSettingsField(text: string): FieldMatch | null {
   return { field: mapped, value };
 }
 
-/**
- * Parse `/settings` argument text (everything after the command).
- */
 export function parseSettingsCommand(
   raw: string | undefined,
 ): ParsedSettingsCommand {
@@ -230,20 +217,11 @@ export function parseSettingsCommand(
         label: `trading → ${on ? "enabled" : "disabled"}`,
       };
     }
-    case "mode": {
-      if (!value)
-        return {
-          kind: "error",
-          reason: "Usage: /settings mode paper|testnet",
-        };
-      const mode = parseMode(value);
-      if (typeof mode === "object") return { kind: "error", reason: mode.error };
+    case "mode":
       return {
-        kind: "patch",
-        patch: { executionMode: mode },
-        label: `execution mode → ${mode}`,
+        kind: "error",
+        reason: "Paper mode has been removed. Trading is Shannon testnet only.",
       };
-    }
     default:
       return {
         kind: "error",
@@ -263,6 +241,7 @@ export function mergeSettingsPatch(
       patch.dailyProfitTarget === undefined
         ? current.dailyProfitTarget
         : patch.dailyProfitTarget,
+    executionMode: "testnet",
   };
 }
 
@@ -283,20 +262,23 @@ export function formatSettingsHelp(system: SystemRiskLimits): string {
     "",
     "/settings — show your configuration",
     "/settings stake 10 — default amount used when you run /trade",
-    "/settings max stake 30 — hard cap per trade (and future autonomous sizing ceiling)",
-    "/settings max daily loss 70 — maximum loss allowed per day",
+    "/settings max stake 30 — hard cap per trade",
+    "/settings max daily loss 70 — maximum loss allowed per UTC day",
     "/settings max positions 5 — maximum active trades",
     "/settings profit target 200 — daily profit target (or off)",
     "/settings trading on — enable or disable trading",
-    "/settings mode paper — paper = no on-chain orders; testnet = may trade on Shannon",
+    "",
+    "Also: /auto on|off, /leaderboard, /claim, /trade",
     "",
     "Default stake is what /trade uses today.",
     "Max stake is the per-trade ceiling (default stake cannot exceed it).",
+    "Mode is Shannon testnet only. Live submit still needs ENABLE_LIVE_EXECUTION.",
+    "Daily limits reset at UTC midnight.",
     "",
     `System limits: stake ${system.minStake}–${system.maxStake} tUSDC, max positions ${system.maxOpenPositions}, max daily loss ${system.maxDailyLoss} tUSDC.`,
     "Values outside these limits are rejected (not silently changed).",
     "",
-    `Defaults for new users: stake ${DEFAULT_USER_PREFERENCES.defaultStake}, max stake ${DEFAULT_USER_PREFERENCES.maxTradeStake}, max daily loss ${DEFAULT_USER_PREFERENCES.maxDailyLoss}, max positions ${DEFAULT_USER_PREFERENCES.maxOpenPositions}, trading off, mode ${DEFAULT_USER_PREFERENCES.executionMode}.`,
+    `Defaults for new users: stake ${DEFAULT_USER_PREFERENCES.defaultStake}, max stake ${DEFAULT_USER_PREFERENCES.maxTradeStake}, max daily loss ${DEFAULT_USER_PREFERENCES.maxDailyLoss}, max positions ${DEFAULT_USER_PREFERENCES.maxOpenPositions}, trading off.`,
   ].join("\n");
 }
 
@@ -315,7 +297,7 @@ export function formatUserSettings(input: {
     "Your trading settings",
     "",
     `Trading: ${s.tradingEnabled ? "enabled" : "disabled"}`,
-    `Mode: ${s.executionMode === "paper" ? "paper (no on-chain orders)" : s.executionMode}`,
+    "Mode: Shannon testnet",
     `Default stake: ${s.defaultStake} tUSDC (used by /trade)`,
     `Max stake: ${s.maxTradeStake} tUSDC (per-trade ceiling)`,
     `Max daily loss: ${s.maxDailyLoss} tUSDC`,
@@ -334,11 +316,10 @@ export function formatUserSettings(input: {
   return lines.join("\n");
 }
 
-/** Paper mode never requests live chain submit. */
+/** Paper mode is retired. Live submit follows ENABLE_LIVE_EXECUTION + request. */
 export function shouldRequestLiveExecution(
-  executionMode: ExecutionMode,
+  _executionMode: ExecutionMode,
   userRequested: boolean,
 ): boolean {
-  if (executionMode === "paper") return false;
   return userRequested === true;
 }
