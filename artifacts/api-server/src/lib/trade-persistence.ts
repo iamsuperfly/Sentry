@@ -30,7 +30,6 @@ import { setAutonomousEnabled } from "./autonomous-state.ts";
 import {
   DEFAULT_USER_TIMEZONE,
   getZonedDayBounds,
-  normalizeTimezone,
 } from "./user-timezone.ts";
 
 export type TelegramIdentity = {
@@ -181,7 +180,7 @@ function mapSettings(row: SettingsRow): PersistedUserSettings {
       row.daily_profit_target_usdso === null
         ? null
         : numeric(row.daily_profit_target_usdso, "daily_profit_target_usdso"),
-    timezone: normalizeTimezone(row.timezone ?? DEFAULT_USER_TIMEZONE),
+    timezone: DEFAULT_USER_TIMEZONE,
     autonomousEnabled: Boolean(row.autonomous_enabled),
     autonomousPausedAt: row.autonomous_paused_at ?? null,
   };
@@ -272,12 +271,8 @@ export async function getRealizedPnlToday(
   now = new Date(),
   timeZone?: string,
 ): Promise<number> {
-  const zone =
-    timeZone ??
-    (await getUserSettings(config, userId).then((s) => s.timezone).catch(
-      () => DEFAULT_USER_TIMEZONE,
-    ));
-  const { start, end } = getZonedDayBounds(now, zone);
+  const { start, end } = getZonedDayBounds(now, DEFAULT_USER_TIMEZONE);
+  void timeZone;
 
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
@@ -469,7 +464,7 @@ export async function createPersistedTradeIntent(input: {
   const storedSettings = await getUserSettings(input.config, userId);
   const [openPositionCount, realizedPnlToday, walletBalances] = await Promise.all([
     getOpenPositionCount(input.config, userId),
-    getRealizedPnlToday(input.config, userId, new Date(), storedSettings.timezone),
+    getRealizedPnlToday(input.config, userId, new Date()),
     balances(input.config, wallet.address),
   ]);
 
