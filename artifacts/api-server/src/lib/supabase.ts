@@ -1,6 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AppConfig } from "../config";
-import { inferTimezoneFromTelegramLanguage } from "./user-timezone.ts";
 
 let client: SupabaseClient | undefined;
 
@@ -82,16 +81,6 @@ export async function ensureUser(
     .from("user_settings")
     .upsert({ user_id: data.id }, { onConflict: "user_id" });
   if (settingsError) throw new Error("Unable to save user settings.");
-
-  if (from.language_code && from.language_code.trim()) {
-    const inferred = inferTimezoneFromTelegramLanguage(from.language_code);
-    await client
-      .from("user_settings")
-      .update({ timezone: inferred, timezone_source: "auto" })
-      .eq("user_id", data.id)
-      .eq("timezone_source", "auto");
-  }
-
   return data.id as string;
 }
 
