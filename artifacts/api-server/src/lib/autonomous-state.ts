@@ -1,10 +1,6 @@
 import type { AppConfig } from "../config.ts";
 import { getSupabaseClient } from "./supabase.ts";
-import {
-  calendarDateInZone,
-  DEFAULT_USER_TIMEZONE,
-  normalizeTimezone,
-} from "./user-timezone.ts";
+import { calendarDateInZone } from "./user-timezone.ts";
 
 export type AutonomousRow = {
   userId: string;
@@ -26,7 +22,7 @@ export async function listAutonomousCandidates(
   const { data, error } = await getSupabaseClient(config)
     .from("user_settings")
     .select(
-      "user_id, timezone, trading_enabled, autonomous_enabled, autonomous_paused_at, last_autonomous_scan_at, last_autonomous_local_date, telegram_chat_id, default_stake_usdso, execution_mode, telegram_users!inner(telegram_user_id)",
+      "user_id, trading_enabled, autonomous_enabled, autonomous_paused_at, last_autonomous_scan_at, last_autonomous_local_date, telegram_chat_id, default_stake_usdso, execution_mode, telegram_users!inner(telegram_user_id)",
     )
     .eq("autonomous_enabled", true);
   if (error) throw new Error("Unable to list autonomous users.");
@@ -42,7 +38,7 @@ export async function listAutonomousCandidates(
       userId: String(r.user_id),
       telegramUserId: Number(profile?.telegram_user_id ?? 0),
       chatId: r.telegram_chat_id === null ? null : Number(r.telegram_chat_id),
-      timezone: normalizeTimezone(String(r.timezone ?? DEFAULT_USER_TIMEZONE)),
+      timezone: "UTC",
       tradingEnabled: Boolean(r.trading_enabled),
       autonomousEnabled: Boolean(r.autonomous_enabled),
       autonomousPausedAt: (r.autonomous_paused_at as string | null) ?? null,
@@ -50,7 +46,7 @@ export async function listAutonomousCandidates(
       lastAutonomousLocalDate:
         (r.last_autonomous_local_date as string | null) ?? null,
       defaultStake: Number(r.default_stake_usdso ?? 1),
-      executionMode: r.execution_mode === "paper" ? "paper" : "testnet",
+      executionMode: "testnet",
     };
   });
 }
@@ -127,20 +123,6 @@ export async function markAutonomousScan(
   if (error) throw new Error("Unable to record autonomous scan.");
 }
 
-export async function saveUserTimezone(
-  config: AppConfig,
-  userId: string,
-  timeZone: string,
-): Promise<string> {
-  const normalized = normalizeTimezone(timeZone);
-  const { error } = await getSupabaseClient(config)
-    .from("user_settings")
-    .update({ timezone: normalized, timezone_source: "manual" })
-    .eq("user_id", userId);
-  if (error) throw new Error("Unable to save timezone.");
-  return normalized;
-}
-
 export function shouldRunAutonomousTick(
   row: AutonomousRow,
   now = new Date(),
@@ -152,7 +134,7 @@ export function shouldRunAutonomousTick(
   if (!row.tradingEnabled) {
     return { run: false, pauseForNewDay: false, reason: "trading_disabled" };
   }
-  const localDate = calendarDateInZone(now, row.timezone);
+  const localDate = calendarDateInZone(now, "UTC");
   if (row.autonomousPausedAt) {
     return { run: false, pauseForNewDay: false, reason: "paused" };
   }

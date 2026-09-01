@@ -5,13 +5,8 @@ import { getLeaderboardMessage } from "../lib/leaderboard-persist";
 import {
   clearAutonomousPause,
   setAutonomousEnabled,
-  saveUserTimezone,
 } from "../lib/autonomous-state";
 import { getUserSettingsForTelegram } from "../lib/trade-persistence";
-import {
-  isValidIanaTimezone,
-  normalizeTimezone,
-} from "../lib/user-timezone";
 
 function safeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
@@ -25,17 +20,7 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
     try {
       if (!ctx.from) return;
       const userId = await ensureUser(config, ctx.from);
-      const settings = await getUserSettingsForTelegram(config, {
-        id: ctx.from.id,
-        username: ctx.from.username,
-        first_name: ctx.from.first_name,
-        last_name: ctx.from.last_name,
-      });
-      const text = await getLeaderboardMessage(
-        config,
-        userId,
-        settings.timezone,
-      );
+      const text = await getLeaderboardMessage(config, userId);
       await ctx.reply(text);
     } catch (error) {
       await ctx.reply(`Unable to load leaderboard.\n\nReason: ${safeError(error)}`);
@@ -58,7 +43,7 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
           [
             `Autonomous trading: ${settings.autonomousEnabled ? "ON" : "OFF"}`,
             settings.autonomousPausedAt
-              ? "Status: paused for the day. Send /trade or /auto on to resume."
+              ? "Status: paused for the UTC day. Send /trade or /auto on to resume."
               : "Status: active when ON.",
             "Auto-claim is tied to this toggle.",
             "",
@@ -84,7 +69,7 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
         );
         await ctx.reply(
           enabled
-            ? "Autonomous trading ON.\nScans every 15 minutes using the same /trade pipeline.\nAutomatic claiming is also ON.\nStops at your local midnight until you send /trade or /auto on."
+            ? "Autonomous trading ON.\nScans every 15 minutes using the same /trade pipeline.\nAutomatic claiming is also ON.\nStops at UTC midnight until you send /trade or /auto on."
             : "Autonomous trading OFF.\nAutomatic claiming is also OFF.\nManual /trade and /claim still work.",
         );
         return;
@@ -92,36 +77,6 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
       await ctx.reply("Usage: /auto on|off|status");
     } catch (error) {
       await ctx.reply(`Unable to update autonomous trading.\n\nReason: ${safeError(error)}`);
-    }
-  });
-
-  bot.command("timezone", async (ctx) => {
-    try {
-      if (!ctx.from) return;
-      const raw = (typeof ctx.match === "string" ? ctx.match : "").trim();
-      const identity = {
-        id: ctx.from.id,
-        username: ctx.from.username,
-        first_name: ctx.from.first_name,
-        last_name: ctx.from.last_name,
-      };
-      const settings = await getUserSettingsForTelegram(config, identity);
-      if (!raw) {
-        await ctx.reply(
-          `Your timezone: ${settings.timezone}\n\nDaily PnL, faucet, loss limits, leaderboard today, and autonomous cutoff use this local midnight.\nChange with /timezone Africa/Lagos`,
-        );
-        return;
-      }
-      if (!isValidIanaTimezone(raw)) {
-        await ctx.reply(
-          `Unknown timezone "${raw}". Use an IANA name such as Africa/Lagos or America/New_York.`,
-        );
-        return;
-      }
-      const saved = await saveUserTimezone(config, settings.userId, raw);
-      await ctx.reply(`Timezone set to ${saved} (${normalizeTimezone(saved)}).`);
-    } catch (error) {
-      await ctx.reply(`Unable to update timezone.\n\nReason: ${safeError(error)}`);
     }
   });
 }

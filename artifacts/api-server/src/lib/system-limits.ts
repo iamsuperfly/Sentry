@@ -15,8 +15,8 @@ export type SystemRiskLimits = {
 export const DEFAULT_SYSTEM_LIMITS: SystemRiskLimits = {
   minStake: 1,
   maxStake: 200,
-  maxOpenPositions: 5,
-  maxDailyLoss: 70,
+  maxOpenPositions: 10,
+  maxDailyLoss: 300,
 };
 
 export function parsePositiveNumber(

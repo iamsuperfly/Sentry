@@ -5,7 +5,6 @@ import {
   formatLeaderboardMessage,
   type LeaderboardTrade,
 } from "./leaderboard.ts";
-import { DEFAULT_USER_TIMEZONE } from "./user-timezone.ts";
 
 export async function loadLeaderboardTrades(
   config: AppConfig,
@@ -43,20 +42,19 @@ export async function loadLeaderboardTrades(
 export async function getLeaderboardMessage(
   config: AppConfig,
   viewerUserId: string,
-  timeZone: string = DEFAULT_USER_TIMEZONE,
   now = new Date(),
 ): Promise<string> {
   const trades = await loadLeaderboardTrades(config);
   const allTime = aggregateLeaderboard(trades, {
     now,
-    timeZone,
+    timeZone: "UTC",
     daily: false,
   });
-  const today = aggregateLeaderboard(trades, { now, timeZone, daily: true });
+  const today = aggregateLeaderboard(trades, { now, timeZone: "UTC", daily: true });
   return formatLeaderboardMessage({
     allTime,
     today,
     viewerUserId,
-    timeZone,
+    timeZone: "UTC",
   });
 }
