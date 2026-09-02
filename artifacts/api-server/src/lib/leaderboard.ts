@@ -1,4 +1,4 @@
-/** Rank users by realized PnL from settled/redeemed trades only. */
+/** Rank users by realized PnL from settled/redeemed/cancelled (early-exit) trades. */
 
 import { classifySettledResult } from "./performance-summary.ts";
 import { isInstantInLocalDay } from "./user-timezone.ts";

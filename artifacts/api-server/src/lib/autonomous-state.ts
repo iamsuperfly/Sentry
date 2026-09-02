@@ -126,7 +126,7 @@ export async function markAutonomousScan(
 export function shouldRunAutonomousTick(
   row: AutonomousRow,
   now = new Date(),
-  minIntervalMs = 14 * 60 * 1000,
+  minIntervalMs = 5 * 60 * 1000,
 ): { run: boolean; pauseForNewDay: boolean; reason: string } {
   if (!row.autonomousEnabled) {
     return { run: false, pauseForNewDay: false, reason: "disabled" };

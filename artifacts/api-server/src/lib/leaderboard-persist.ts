@@ -14,7 +14,7 @@ export async function loadLeaderboardTrades(
     .select(
       "user_id, status, pnl_usdso, outcome, settled_at, telegram_users(username, first_name)",
     )
-    .in("status", ["settled", "redeemed"])
+    .in("status", ["settled", "redeemed", "cancelled"])
     .not("pnl_usdso", "is", null)
     .limit(5000);
   if (error) throw new Error("Unable to load leaderboard trades.");

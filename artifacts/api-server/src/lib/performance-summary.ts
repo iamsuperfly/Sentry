@@ -34,7 +34,7 @@ function finitePnl(value: number | null | undefined): number | null {
 
 function isResolvedStatus(status: string): boolean {
   const s = status.toLowerCase();
-  return s === "settled" || s === "redeemed";
+  return s === "settled" || s === "redeemed" || s === "cancelled";
 }
 
 export function classifySettledResult(input: {
@@ -43,7 +43,8 @@ export function classifySettledResult(input: {
   outcome: string | null;
 }): "win" | "loss" | "void" | "unknown" | "ignored" {
   const status = input.status.toLowerCase();
-  if (status === "failed" || status === "cancelled") return "ignored";
+  if (status === "failed") return "ignored";
+  if (status === "cancelled" && finitePnl(input.pnl) === null) return "ignored";
   if (!isResolvedStatus(status)) return "ignored";
   if (input.outcome === "void") return "void";
   const pnl = finitePnl(input.pnl);

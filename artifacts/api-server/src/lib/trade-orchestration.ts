@@ -177,6 +177,7 @@ export async function runTelegramTradeCycle(input: {
   liveExecutionRequested?: boolean;
   stake?: number;
   asset?: string;
+  excludeMarketIds?: string[];
   deps?: Partial<TradeOrchestrationDeps> | TradeOrchestrationDeps;
 }): Promise<OrchestrationResult> {
   if (!input.identity?.id || !Number.isFinite(input.identity.id)) {
@@ -234,6 +235,14 @@ export async function runTelegramTradeCycle(input: {
       ok: false,
       code: "markets_unavailable",
       reason: message,
+    };
+  }
+
+  if (input.excludeMarketIds && input.excludeMarketIds.length > 0) {
+    const skip = new Set(input.excludeMarketIds);
+    snapshot = {
+      ...snapshot,
+      markets: snapshot.markets.filter((m) => !skip.has(m.marketId)),
     };
   }
 

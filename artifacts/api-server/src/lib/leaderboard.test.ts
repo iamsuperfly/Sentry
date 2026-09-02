@@ -4,6 +4,25 @@ import { aggregateLeaderboard, displayIdentity } from "./leaderboard.ts";
 
 const now = new Date("2026-08-31T18:00:00.000Z");
 
+test("cancelled early-exit pnl ranks", () => {
+  const ranked = aggregateLeaderboard(
+    [
+      {
+        userId: "a",
+        username: "alice",
+        firstName: "A",
+        status: "cancelled",
+        pnl: -12,
+        outcome: null,
+        settledAt: "2026-08-31T12:00:00.000Z",
+      },
+    ],
+    { now, timeZone: "UTC", daily: false },
+  );
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0]?.pnl, -12);
+});
+
 test("failed trades do not rank", () => {
   const ranked = aggregateLeaderboard(
     [

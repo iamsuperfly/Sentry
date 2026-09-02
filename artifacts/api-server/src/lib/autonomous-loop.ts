@@ -1,6 +1,10 @@
 import type { Bot } from "grammy";
 import type { AppConfig } from "../config.ts";
 import { formatClaimMessage, runUserClaimScan } from "./claim-positions.ts";
+import {
+  formatEarlyExitMessage,
+  manageOpenPositions,
+} from "./early-exit-manage.ts";
 import { logger } from "./logger.ts";
 import { findWallet } from "./supabase.ts";
 import { formatMultiTradeReply } from "./telegram-multi-trade-reply.ts";
@@ -30,7 +34,7 @@ import {
   type DayHaltCode,
 } from "./risk-supervisor.ts";
 
-const INTERVAL_MS = 15 * 60 * 1000;
+const INTERVAL_MS = 6 * 60 * 1000;
 
 function notifyChat(bot: Bot, chatId: number | null, telegramUserId: number, text: string) {
   const target = chatId && Number.isFinite(chatId) ? chatId : telegramUserId;
@@ -157,6 +161,36 @@ export async function runAutonomousTick(
       username: undefined,
       first_name: "trader",
     };
+    let excludedMarketIds: string[] = [];
+    try {
+      const wallet = await findWallet(config, row.telegramUserId);
+      if (wallet) {
+        const managed = await manageOpenPositions({
+          config,
+          userId: row.userId,
+          walletAddress: wallet.address,
+          encryptedPrivateKey: wallet.encrypted_private_key,
+          liveExecutionRequested: shouldRequestLiveExecution(
+            row.executionMode,
+            true,
+          ),
+        });
+        excludedMarketIds = managed.excludedMarketIds;
+        const note = formatEarlyExitMessage(managed.attempts);
+        if (note) {
+          await notifyChat(bot, row.chatId, row.telegramUserId, note);
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        {
+          userId: row.userId,
+          err: error instanceof Error ? error.message.slice(0, 160) : "manage",
+        },
+        "autonomous position management failed",
+      );
+    }
+
     try {
       const result = await runTelegramTradeCycle({
         config,
@@ -166,6 +200,7 @@ export async function runAutonomousTick(
           true,
         ),
         stake: row.defaultStake,
+        excludeMarketIds,
       });
       await markAutonomousScan(config, row.userId, row.timezone, now);
       if (!result.ok) {
