@@ -16,6 +16,17 @@ test("open and failed trades are ignored", () => {
     classifySettledResult({ status: "failed", pnl: -30, outcome: null }),
     "ignored",
   );
+  assert.equal(
+    classifySettledResult({ status: "cancelled", pnl: null, outcome: null }),
+    "ignored",
+  );
+});
+
+test("early-exit cancelled with realized pnl counts", () => {
+  assert.equal(
+    classifySettledResult({ status: "cancelled", pnl: -16.2, outcome: null }),
+    "loss",
+  );
 });
 
 test("unknown reconstructed PnL stays excluded", () => {
