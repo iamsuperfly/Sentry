@@ -21,7 +21,7 @@ import {
   marketEligibleForGemini,
   toGeminiMarketInput,
 } from "./gemini-path.ts";
-import { extractBookTop, secondsToExpiry } from "./strategy.ts";
+import { secondsToExpiry } from "./strategy.ts";
 import { logger } from "./logger.ts";
 import {
   evaluateOneMinMarketWithBinance,
@@ -31,10 +31,8 @@ import {
 import type { TelegramIdentity } from "./trade-persistence.ts";
 import {
   getOpenPositionCount,
-  getRealizedPnlToday,
   getUserSettings,
 } from "./trade-persistence.ts";
-import { remainingDailyLossBudget } from "./adaptive-stake.ts";
 import { ensureUser } from "./supabase.ts";
 import {
   computeAvailableSlots,
