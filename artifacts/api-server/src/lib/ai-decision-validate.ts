@@ -1,7 +1,10 @@
 /**
  * Deterministic validation of Gemini (or any AI) trade candidates.
  * Risk ceilings remain authoritative.
+ * Live stake is assigned by adaptive-stake, not Groq.
  */
+
+import { executableAskNotional, sizeAdaptiveScan } from "./adaptive-stake.ts";
 
 export type ScannedMarketRef = {
   marketId: string;
@@ -9,6 +12,11 @@ export type ScannedMarketRef = {
   finalized: boolean;
   secondsToExpiry: number | null;
   asset: string;
+  decimals?: number;
+  yesAsk?: number | null;
+  noAsk?: number | null;
+  yesAskQuantity?: string | null;
+  noAskQuantity?: string | null;
 };
 
 export type AiCandidate = {
@@ -26,6 +34,9 @@ export type ValidationContext = {
   systemMaxStake: number;
   userMaxStake: number;
   defaultStake: number;
+  remainingBudget?: number;
+  maxTradeStake?: number;
+  askNotionalByMarket?: Record<string, number | null>;
 };
 
 export type ValidatedCandidate = {
@@ -102,44 +113,59 @@ export function validateAiCandidates(
       continue;
     }
 
-    let stake =
-      c.stake !== null && c.stake !== undefined && Number.isFinite(c.stake) && c.stake > 0
-        ? c.stake
-        : ctx.defaultStake;
-
-    if (stake < ctx.systemMinStake) {
-      rejected.push({
-        marketId: c.marketId,
-        code: "stake_below_min",
-        reason: `Stake ${stake} below system min ${ctx.systemMinStake}.`,
-      });
-      continue;
-    }
-    if (stake > ctx.systemMaxStake) {
-      rejected.push({
-        marketId: c.marketId,
-        code: "stake_above_system_max",
-        reason: `Stake ${stake} exceeds system max ${ctx.systemMaxStake}.`,
-      });
-      continue;
-    }
-    if (stake > ctx.userMaxStake) {
-      rejected.push({
-        marketId: c.marketId,
-        code: "stake_above_user_max",
-        reason: `Stake ${stake} exceeds user max stake ${ctx.userMaxStake}.`,
-      });
-      continue;
-    }
-
     seen.add(c.marketId);
     accepted.push({
       marketId: c.marketId,
       direction: dir as "UP" | "DOWN",
       confidence: c.confidence,
       reason: c.reason,
-      stake,
+      stake: 0,
     });
+  }
+
+  const maxTradeStake = ctx.maxTradeStake;
+  const remainingBudget = ctx.remainingBudget;
+  if (
+    accepted.length > 0 &&
+    maxTradeStake !== undefined &&
+    remainingBudget !== undefined
+  ) {
+    const ranked = [...accepted].sort((a, b) => b.confidence - a.confidence);
+    const sized = sizeAdaptiveScan({
+      candidates: ranked.map((c) => {
+        const m = byId.get(c.marketId);
+        const ask = c.direction === "UP" ? m?.yesAsk : m?.noAsk;
+        const qty = c.direction === "UP" ? m?.yesAskQuantity : m?.noAskQuantity;
+        return {
+          marketId: c.marketId,
+          confidence: c.confidence,
+          askNotional: executableAskNotional({
+            askPrice: ask ?? null,
+            askQuantityRaw: qty ?? null,
+            decimals: m?.decimals ?? 6,
+          }),
+        };
+      }),
+      maxTradeStake,
+      systemMinStake: ctx.systemMinStake,
+      systemMaxStake: ctx.systemMaxStake,
+      remainingBudget,
+    });
+    const next: ValidatedCandidate[] = [];
+    for (const row of sized) {
+      const orig = ranked.find((c) => c.marketId === row.marketId);
+      if (!orig) continue;
+      if (!row.ok) {
+        rejected.push({
+          marketId: row.marketId,
+          code: row.code,
+          reason: row.reason,
+        });
+        continue;
+      }
+      next.push({ ...orig, stake: row.stake });
+    }
+    return { accepted: next, rejected };
   }
 
   return { accepted, rejected };

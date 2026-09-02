@@ -17,11 +17,10 @@ import {
 } from "./groq-client.ts";
 import { validateAiCandidates } from "./ai-decision-validate.ts";
 import {
-  geminiCandidateToStrategyDecision,
   marketEligibleForGemini,
   toGeminiMarketInput,
 } from "./gemini-path.ts";
-import { secondsToExpiry } from "./strategy.ts";
+import { extractBookTop, secondsToExpiry } from "./strategy.ts";
 import { logger } from "./logger.ts";
 import {
   evaluateOneMinMarketWithBinance,
@@ -31,8 +30,10 @@ import {
 import type { TelegramIdentity } from "./trade-persistence.ts";
 import {
   getOpenPositionCount,
+  getRealizedPnlToday,
   getUserSettings,
 } from "./trade-persistence.ts";
+import { remainingDailyLossBudget } from "./adaptive-stake.ts";
 import { ensureUser } from "./supabase.ts";
 import {
   computeAvailableSlots,
@@ -141,7 +142,6 @@ export type OrchestrationSuccess = {
   stake: number;
   execution: LiveSubmitResult;
   marketScan: MarketScanSummary;
-  /** Independent trade attempts (multi AI slots or single 1m/injected). */
   trades: CandidateTradeAttempt[];
 };
 
@@ -379,10 +379,16 @@ export async function runTelegramTradeCycle(input: {
       }
 
       const userIdForSlots = await ensureUser(input.config, input.identity);
-      const [settingsForSlots, openCount] = await Promise.all([
+      const [settingsForSlots, openCount, realizedPnlToday] = await Promise.all([
         getUserSettings(input.config, userIdForSlots),
         getOpenPositionCount(input.config, userIdForSlots),
+        getRealizedPnlToday(input.config, userIdForSlots, new Date()),
       ]);
+      const remainingBudget = remainingDailyLossBudget({
+        realizedPnlToday,
+        userMaxDailyLoss: settingsForSlots.maxDailyLoss,
+        systemMaxDailyLoss: input.config.systemLimits.maxDailyLoss,
+      });
       const availableSlots = computeAvailableSlots({
         userMaxOpen: settingsForSlots.maxOpenPositions,
         systemMaxOpen: input.config.systemLimits.maxOpenPositions,
@@ -444,19 +450,43 @@ export async function runTelegramTradeCycle(input: {
           stake: d.stake,
         })),
         {
-          markets: aiEligible.map((m) => ({
-            marketId: m.marketId,
-            tradable: m.tradable,
-            finalized: m.finalized,
-            secondsToExpiry: secondsToExpiry(m.expiry, nowSec),
-            asset: m.asset,
-          })),
+          markets: aiEligible.map((m) => {
+            const book = extractBookTop(m);
+            return {
+              marketId: m.marketId,
+              tradable: m.tradable,
+              finalized: m.finalized,
+              secondsToExpiry: secondsToExpiry(m.expiry, nowSec),
+              asset: m.asset,
+              decimals: m.decimals,
+              yesAsk: book.yesAsk,
+              noAsk: book.noAsk,
+              yesAskQuantity: m.book.yesAsks[0]?.quantity ?? null,
+              noAskQuantity: m.book.noAsks[0]?.quantity ?? null,
+            };
+          }),
           availableSlots,
           systemMinStake: input.config.systemLimits.minStake,
           systemMaxStake: input.config.systemLimits.maxStake,
-          userMaxStake: input.config.systemLimits.maxStake,
+          userMaxStake: settingsForSlots.maxTradeStake,
           defaultStake: input.stake ?? input.config.systemLimits.minStake,
+          maxTradeStake: settingsForSlots.maxTradeStake,
+          remainingBudget,
         },
+      );
+      logger.info(
+        {
+          provider: "groq",
+          maxTradeStake: settingsForSlots.maxTradeStake,
+          realizedPnlToday,
+          remainingDailyBudget: remainingBudget,
+          acceptedStakes: validation.accepted.map((a) => ({
+            marketId: a.marketId,
+            confidence: a.confidence,
+            stake: a.stake,
+          })),
+        },
+        "adaptive stake sizing",
       );
 
       marketScan.aiCandidates = aiResult.decisions.length;
