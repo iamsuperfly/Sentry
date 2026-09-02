@@ -68,11 +68,6 @@ export function buildIdempotencyKey(input: {
   ].join(":");
 }
 
-/**
- * A terminal trade closes one idempotency generation. Deriving the next key
- * from that persisted row keeps retries of the new generation idempotent
- * without weakening the database's global unique-key protection.
- */
 export function buildReentryIdempotencyKey(
   baseKey: string,
   previousTradeId: string,
@@ -80,11 +75,6 @@ export function buildReentryIdempotencyKey(
   return `${baseKey}:reentry:${previousTradeId}`;
 }
 
-/**
- * Convert a Stage 2 enter decision into a trade intent after system+user risk.
- * Does not touch the chain or database — pure.
- * Protocol tick/lot/status checks remain for the live execution path.
- */
 export function buildTradeIntent(input: {
   userId: string;
   walletAddress: string;
@@ -174,7 +164,7 @@ const TRANSITIONS: Record<IntentStatus, IntentStatus[]> = {
   pending: ["submitted", "failed", "cancelled"],
   submitted: ["partially_filled", "filled", "failed", "cancelled"],
   partially_filled: ["filled", "cancelled", "failed"],
-  filled: ["settled", "failed"],
+  filled: ["settled", "failed", "cancelled"],
   cancelled: [],
   settled: ["redeemed"],
   redeemed: [],
@@ -227,11 +217,6 @@ export function assertLiveSubmitAllowed(
   return { ok: true };
 }
 
-/**
- * Planned on-chain steps when live submit is enabled.
- * Signer is always the user wallet (never treasury).
- * Protocol checks (Trading status, tick, lot, tUSDC allowance) belong here — not in user risk prefs.
- */
 export function planLiveSubmission(intent: TradeIntent): {
   steps: string[];
   signer: "user_wallet";
