@@ -4,6 +4,7 @@
  */
 
 import { resolveMarketDurationSeconds } from "./decision-market-meta.ts";
+import { sanitizeTechnicalErrorNote } from "./telegram-user-errors.ts";
 
 export function parseUnixSeconds(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined) return null;
@@ -194,7 +195,8 @@ export function formatPositionBlock(
     lines.push("Unrealized: n/a (no live mark)");
   }
   if (tx) lines.push(tx);
-  if (trade.errorMessage) lines.push(`Note: ${trade.errorMessage}`);
+  const note = sanitizeTechnicalErrorNote(trade.errorMessage);
+  if (note) lines.push(`Note: ${note}`);
   return lines.join("\n");
 }
 
@@ -266,7 +268,7 @@ export function formatTradeExecutionMessage(input: {
     input.limitPrice === null || input.limitPrice === undefined ? "n/a" : String(input.limitPrice);
   const tx = formatExplorerLinkLine(input.explorerTxBaseUrl, input.transactionHash);
   const lines = [
-    "✅ Trade update",
+    "\u2705 Trade update",
     "",
     `Trade ID: ${input.tradeId}`,
     `Market: ${input.symbol} · ${timeframe}`,
@@ -317,10 +319,10 @@ export function formatFinalizationMessage(input: {
   const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry, input.intervalSec);
   const timeframe = formatTimeframe(duration);
   const header =
-    kind === "win" ? "✅ Trade finalized"
-    : kind === "loss" ? "❌ Trade finalized"
-    : kind === "failed" || kind === "cancelled" ? "⚠️ Trade closed"
-    : "ℹ️ Trade finalized";
+    kind === "win" ? "\u2705 Trade finalized"
+    : kind === "loss" ? "\u274c Trade finalized"
+    : kind === "failed" || kind === "cancelled" ? "\u26a0\ufe0f Trade closed"
+    : "\u2139\ufe0f Trade finalized";
   const resultLabel =
     kind === "win" ? "WIN"
     : kind === "loss" ? "LOSS"
@@ -344,50 +346,18 @@ export function formatFinalizationMessage(input: {
   lines.push(`Final status: ${input.status}`);
   const tx = formatExplorerLinkLine(input.explorerTxBaseUrl, input.transactionHash ?? null);
   if (tx) lines.push(tx);
-  if (input.errorMessage) lines.push(`Reason: ${input.errorMessage}`);
+  const reasonNote = sanitizeTechnicalErrorNote(input.errorMessage);
+  if (reasonNote) lines.push(`Reason: ${reasonNote}`);
   return lines.join("\n");
 }
 
-export function formatUserFacingTradeFailure(input: {
-  code: string;
-  reason?: string | null;
-}): string {
-  const code = (input.code || "").toLowerCase();
-  switch (code) {
-    case "no_enter_decision":
-      return ["⚪ No trade placed", "", "No market currently meets the strategy's conditions.", "No funds were used."].join("\n");
-    case "trading_disabled":
-      return ["⚪ Trading is turned off", "", "Enable it with /settings trading on, or review /settings."].join("\n");
-    case "markets_unavailable":
-      return ["⚪ Markets unavailable", "", "Could not load market data right now. Try again shortly.", "No funds were used."].join("\n");
-    case "live_execution_disabled":
-      return ["⚪ Order not submitted on-chain", "", "Live trading is not enabled on the server.", "Your trade intent may still be recorded."].join("\n");
-    case "stake_exceeds_user_max":
-    case "stake_above_system_max":
-    case "stake_below_system_min":
-      return ["⚪ Stake not allowed", "", "The requested stake is outside your limits. Check /settings.", "No funds were used."].join("\n");
-    case "user_max_open_positions":
-    case "system_max_open_positions":
-      return ["⚪ Position limit reached", "", "You already have the maximum number of open trades.", "Close or wait for positions to finish, or raise the limit in /settings.", "No funds were used."].join("\n");
-    case "max_daily_loss":
-    case "daily_loss_limit":
-      return ["⚪ Daily loss limit reached", "", "No new trades until the next UTC day, or adjust /settings max daily loss.", "No funds were used."].join("\n");
-    case "profit_target_reached":
-    case "daily_profit_target":
-      return ["⚪ Daily profit target reached", "", "New trades are paused until the next UTC day.", "No funds were used."].join("\n");
-    case "insufficient_collateral":
-    case "insufficient_balance":
-      return ["⚪ Insufficient tUSDC", "", "Add funds with /faucet or check /status.", "No trade was placed."].join("\n");
-    case "unauthenticated":
-      return ["⚪ Wallet not ready", "", "Use /start first to create your wallet."].join("\n");
-    case "persist_failed":
-    case "missing_trade_id":
-    case "stale_intent_cleanup_failed":
-      return ["⚪ Could not record the trade", "", "Please try again in a moment. No on-chain order was sent."].join("\n");
-    default:
-      return ["⚪ No trade placed", "", "The trade could not be completed.", "No funds were used unless an on-chain transaction already confirmed.", "Check /status and try again, or use /help."].join("\n");
-  }
-}
+export {
+  extractPnlFromReason,
+  formatUserFacingTradeFailure,
+  looksLikeAllowanceOrRpc,
+  looksLikeIocNoFill,
+  sanitizeTechnicalErrorNote,
+} from "./telegram-user-errors.ts";
 
 export function formatExecutionModeLabel(mode: string): string {
   if (mode === "paper") return "paper (no on-chain orders)";
