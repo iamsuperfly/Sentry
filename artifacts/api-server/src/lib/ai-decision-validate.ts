@@ -102,43 +102,14 @@ export function validateAiCandidates(
       continue;
     }
 
-    let stake =
-      c.stake !== null && c.stake !== undefined && Number.isFinite(c.stake) && c.stake > 0
-        ? c.stake
-        : ctx.defaultStake;
-
-    if (stake < ctx.systemMinStake) {
-      rejected.push({
-        marketId: c.marketId,
-        code: "stake_below_min",
-        reason: `Stake ${stake} below system min ${ctx.systemMinStake}.`,
-      });
-      continue;
-    }
-    if (stake > ctx.systemMaxStake) {
-      rejected.push({
-        marketId: c.marketId,
-        code: "stake_above_system_max",
-        reason: `Stake ${stake} exceeds system max ${ctx.systemMaxStake}.`,
-      });
-      continue;
-    }
-    if (stake > ctx.userMaxStake) {
-      rejected.push({
-        marketId: c.marketId,
-        code: "stake_above_user_max",
-        reason: `Stake ${stake} exceeds user max stake ${ctx.userMaxStake}.`,
-      });
-      continue;
-    }
-
+    // Groq stake is advisory only. Live size is assigned later by adaptive-stake.
     seen.add(c.marketId);
     accepted.push({
       marketId: c.marketId,
       direction: dir as "UP" | "DOWN",
       confidence: c.confidence,
       reason: c.reason,
-      stake,
+      stake: 0,
     });
   }
 
