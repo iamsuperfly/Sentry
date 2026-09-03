@@ -5,6 +5,8 @@ import { calendarDateInZone } from "./user-timezone.ts";
 export type AutonomousRow = {
   userId: string;
   telegramUserId: number;
+  username?: string;
+  firstName?: string;
   chatId: number | null;
   timezone: string;
   tradingEnabled: boolean;
@@ -22,7 +24,7 @@ export async function listAutonomousCandidates(
   const { data, error } = await getSupabaseClient(config)
     .from("user_settings")
     .select(
-      "user_id, trading_enabled, autonomous_enabled, autonomous_paused_at, last_autonomous_scan_at, last_autonomous_local_date, telegram_chat_id, default_stake_usdso, execution_mode, telegram_users!inner(telegram_user_id)",
+      "user_id, trading_enabled, autonomous_enabled, autonomous_paused_at, last_autonomous_scan_at, last_autonomous_local_date, telegram_chat_id, default_stake_usdso, execution_mode, telegram_users!inner(telegram_user_id, username, first_name)",
     )
     .eq("autonomous_enabled", true);
   if (error) throw new Error("Unable to list autonomous users.");
@@ -30,13 +32,15 @@ export async function listAutonomousCandidates(
   return (data ?? []).map((row) => {
     const r = row as Record<string, unknown>;
     const users = r.telegram_users as
-      | { telegram_user_id?: number }
-      | { telegram_user_id?: number }[]
+      | { telegram_user_id?: number; username?: string | null; first_name?: string | null }
+      | { telegram_user_id?: number; username?: string | null; first_name?: string | null }[]
       | null;
     const profile = Array.isArray(users) ? users[0] : users;
     return {
       userId: String(r.user_id),
       telegramUserId: Number(profile?.telegram_user_id ?? 0),
+      username: profile?.username ? String(profile.username) : undefined,
+      firstName: profile?.first_name ? String(profile.first_name) : undefined,
       chatId: r.telegram_chat_id === null ? null : Number(r.telegram_chat_id),
       timezone: "UTC",
       tradingEnabled: Boolean(r.trading_enabled),
