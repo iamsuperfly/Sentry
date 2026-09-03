@@ -104,9 +104,19 @@ export async function manageOpenPositions(input: {
   const attempts: EarlyExitAttempt[] = [];
   const excluded = new Set<string>();
   const positions = await listManageablePositions(input.config, input.userId);
+  const liveEnabled =
+    input.config.enableLiveExecution && input.liveExecutionRequested;
+  logger.info(
+    {
+      userId: input.userId,
+      filledPositions: positions.length,
+      liveEnabled,
+    },
+    "early-loss inventory",
+  );
   if (positions.length === 0) return { attempts, excludedMarketIds: [] };
 
-  if (!input.config.enableLiveExecution || !input.liveExecutionRequested) {
+  if (!liveEnabled) {
     return { attempts, excludedMarketIds: [] };
   }
 
