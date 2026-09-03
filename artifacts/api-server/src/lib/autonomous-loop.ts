@@ -10,7 +10,7 @@ import { findWallet } from "./supabase.ts";
 import { formatMultiTradeReply } from "./telegram-multi-trade-reply.ts";
 import { formatUserFacingTradeFailure } from "./telegram-trade-format.ts";
 import { shouldRequestLiveExecution } from "./telegram-settings.ts";
-import { runTelegramTradeCycle } from "./trade-orchestration.ts";
+import { runSafeTelegramTradeCycle } from "./trade-cycle-safe.ts";
 import {
   listAutonomousCandidates,
   markAutonomousScan,
@@ -41,6 +41,16 @@ function errText(error: unknown, fallback: string): string {
   return fallback;
 }
 
+async function sendTelegram(
+  bot: Bot,
+  chatId: number,
+  text: string,
+): Promise<void> {
+  await bot.api.sendMessage(chatId, text, {
+    link_preview_options: { is_disabled: true },
+  });
+}
+
 async function notifyChat(
   bot: Bot,
   chatId: number | null,
@@ -48,22 +58,48 @@ async function notifyChat(
   text: string,
   userId?: string,
 ): Promise<void> {
-  const target = chatId && Number.isFinite(chatId) ? chatId : telegramUserId;
-  if (!target) return;
+  const primary = chatId && Number.isFinite(chatId) ? chatId : telegramUserId;
+  const fallback =
+    telegramUserId && telegramUserId !== primary ? telegramUserId : null;
+  if (!primary) {
+    logger.warn({ userId, chatId, telegramUserId }, "autonomous telegram notify skipped (no chat id)");
+    return;
+  }
   try {
-    await bot.api.sendMessage(target, text, {
-      link_preview_options: { is_disabled: true },
-    });
+    await sendTelegram(bot, primary, text);
+    logger.info(
+      { userId, chatId: primary, chars: text.length },
+      "autonomous telegram notify sent",
+    );
+    return;
   } catch (error) {
     logger.warn(
       {
         userId,
-        chatId: target,
+        chatId: primary,
         err: errText(error, "notify"),
         stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
       },
       "autonomous telegram notify failed",
     );
+  }
+  if (fallback) {
+    try {
+      await sendTelegram(bot, fallback, text);
+      logger.info(
+        { userId, chatId: fallback, via: "telegramUserId" },
+        "autonomous telegram notify sent",
+      );
+    } catch (error) {
+      logger.warn(
+        {
+          userId,
+          chatId: fallback,
+          err: errText(error, "notify-fallback"),
+        },
+        "autonomous telegram notify fallback failed",
+      );
+    }
   }
 }
 
@@ -186,8 +222,8 @@ export async function runAutonomousTick(
 
     const identity = {
       id: row.telegramUserId,
-      username: undefined,
-      first_name: "trader",
+      username: row.username,
+      first_name: row.firstName || "trader",
     };
     let excludedMarketIds: string[] = [];
     try {
@@ -246,7 +282,7 @@ export async function runAutonomousTick(
         },
         "autonomous scan started",
       );
-      const result = await runTelegramTradeCycle({
+      const result = await runSafeTelegramTradeCycle({
         config,
         identity,
         liveExecutionRequested: shouldRequestLiveExecution(
@@ -363,12 +399,25 @@ export async function runAutonomousTick(
         encryptedPrivateKey: wallet.encrypted_private_key,
       });
       const claimed = attempts.filter((a) => a.status === "claimed").length;
+      const skipped = attempts.filter((a) => a.status === "skipped").length;
+      const failed = attempts.filter((a) => a.status === "failed").length;
+      logger.info(
+        {
+          userId: row.userId,
+          scanned: attempts.length,
+          claimed,
+          skipped,
+          failed,
+        },
+        "autonomous claim result",
+      );
       if (claimed > 0) {
         await notifyChat(
           bot,
           row.chatId,
           row.telegramUserId,
           `Autonomous claim\n\n${formatClaimMessage(attempts)}`,
+          row.userId,
         );
       }
     } catch (error) {
