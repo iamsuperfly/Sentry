@@ -47,7 +47,7 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
               : "Status: active when ON.",
             "Auto-claim is tied to this toggle.",
             "",
-            "/auto on — enable 15-minute scans",
+            "/auto on — enable 6-minute scans",
             "/auto off — disable",
           ].join("\n"),
         );
@@ -69,7 +69,7 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
         );
         await ctx.reply(
           enabled
-            ? "Autonomous trading ON.\nScans every 15 minutes using the same /trade pipeline.\nAutomatic claiming is also ON.\nStops at UTC midnight until you send /trade or /auto on."
+            ? "Autonomous trading ON.\nScans every 6 minutes using the same /trade pipeline.\nAutomatic claiming is also ON.\nStops at UTC midnight until you send /trade or /auto on."
             : "Autonomous trading OFF.\nAutomatic claiming is also OFF.\nManual /trade and /claim still work.",
         );
         return;

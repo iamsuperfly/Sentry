@@ -14,7 +14,7 @@ Users get a dedicated wallet, faucet tUSDC, scan live BTC/ETH markets, take trad
 - `/positions`, `/history` (reconstructed win/loss PnL), `/status` (today + all-time PnL, unclaimed, wins/losses)
 - `/claim` redeem of finalized winning (or void) ERC-6909 balances via `trader.redeem`
 - `/leaderboard` all-time top 10 + your all-time and UTC-today ranks
-- `/auto on|off` opt-in 15-minute loop (same `/trade` pipeline + auto-claim). Stops at UTC midnight until `/trade` or `/auto on`
+- `/auto on|off` opt-in 6-minute loop (same `/trade` pipeline + auto-claim). Stops at UTC midnight until `/trade` or `/auto on`
 - Shannon testnet only. Live chain submit still gated by `ENABLE_LIVE_EXECUTION`
 
 ## Technology
@@ -33,7 +33,7 @@ Users get a dedicated wallet, faucet tUSDC, scan live BTC/ETH markets, take trad
 - `/status` — wallet, balances, settings, today + all-time PnL
 - `/settings` — stake, max stake, daily loss, open positions, trading on/off
 - `/trade` — one scan: 1m Binance if applicable, otherwise Groq
-- `/auto on|off|status` — opt-in 15-minute autonomous scans + auto-claim
+- `/auto on|off|status` — opt-in 6-minute autonomous scans + auto-claim
 - `/leaderboard` — all-time top 10 plus your ranks
 - `/positions` — open positions on markets that have not expired
 - `/history` — latest completed trades with reconstructed PnL
