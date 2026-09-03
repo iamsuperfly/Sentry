@@ -14,7 +14,7 @@ Users get a dedicated wallet, faucet tUSDC, scan live BTC/ETH markets, take trad
 - `/positions`, `/history` (reconstructed win/loss PnL), `/status` (today + all-time PnL, unclaimed, wins/losses)
 - `/claim` redeem of finalized winning (or void) ERC-6909 balances via `trader.redeem`
 - `/leaderboard` all-time top 10 + your all-time and UTC-today ranks
-- `/auto on|off` opt-in 6-minute loop (same `/trade` pipeline + auto-claim). Stops at UTC midnight until `/trade` or `/auto on`
+- Button-first Telegram app after `/start` (faucet → defaults → main keyboard)
 - Shannon testnet only. Live chain submit still gated by `ENABLE_LIVE_EXECUTION`
 
 ## Technology
@@ -26,22 +26,14 @@ Users get a dedicated wallet, faucet tUSDC, scan live BTC/ETH markets, take trad
 - Groq OpenAI-compatible API for 5m/15m+ decisions
 - Binance public ticker for 1m only (no API key)
 
-## Telegram commands
+## Telegram app
 
-- `/start` — create or resume the dedicated wallet
-- `/faucet <amount>` — request tUSDC (500 / UTC day)
-- `/status` — wallet, balances, settings, today + all-time PnL
-- `/settings` — stake, max stake, daily loss, open positions, trading on/off
-- `/trade` — one scan: 1m Binance if applicable, otherwise Groq
-- `/auto on|off|status` — opt-in 6-minute autonomous scans + auto-claim
-- `/leaderboard` — all-time top 10 plus your ranks
-- `/positions` — open positions on markets that have not expired
-- `/history` — latest completed trades with reconstructed PnL
-- `/claim` — redeem settled winning outcome tokens into tUSDC
-- `/stop` — disable trading and autonomous mode (history kept)
-- `/fund` — resume interrupted STT funding
-- `/privatekey` — export key (message auto-deletes)
-- `/help`
+Primary UX is buttons after `/start` (faucet → defaults → main keyboard).
+
+- Trade now, Autonomous, Positions, Performance, Wallet, Help
+- Help → Settings is button-driven (enter a number)
+- `/start` is the only command users need
+- Legacy `/trade`, `/auto`, `/settings`, `/claim`, `/positions` still work
 
 There is no paper mode and no `/timezone`. Daily PnL, faucet, daily loss, daily leaderboard, and autonomous cutoff all use **UTC midnight**.
 
