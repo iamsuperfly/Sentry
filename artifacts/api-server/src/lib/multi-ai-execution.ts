@@ -210,12 +210,46 @@ export async function processAiCandidateTrades(input: {
       continue;
     }
 
-    const execution = await input.executePersisted({
-      config: input.config,
-      identity: input.identity,
-      tradeId,
-      liveExecutionRequested: input.liveExecutionRequested,
-    });
+    let execution: LiveSubmitResult;
+    try {
+      execution = await input.executePersisted({
+        config: input.config,
+        identity: input.identity,
+        tradeId,
+        liveExecutionRequested: input.liveExecutionRequested,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message.slice(0, 200)
+          : "Unable to execute persisted trade.";
+      logger.warn(
+        {
+          provider: "groq",
+          marketId: candDecision.marketId,
+          tradeId,
+          err: message,
+          stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
+        },
+        "Trade candidate execution threw",
+      );
+      attempts.push({
+        marketId: candDecision.marketId,
+        asset: candDecision.asset,
+        direction: String(candDecision.direction),
+        stake: persisted.intent.stake,
+        limitPriceHint: candDecision.limitPriceHint,
+        confidence: candidate.confidence,
+        reason: candidate.reason,
+        tradeId,
+        intentSymbol: persisted.intent.symbol,
+        decision: candDecision,
+        ok: false,
+        code: "execution_failed",
+        reasonDetail: message,
+      });
+      continue;
+    }
 
     attempts.push({
       marketId: candDecision.marketId,
