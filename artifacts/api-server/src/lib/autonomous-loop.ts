@@ -17,6 +17,7 @@ import {
   pauseAutonomousForLocalDay,
   shouldRunAutonomousTick,
 } from "./autonomous-state.ts";
+import { buildAutonomousTradeCycleInput } from "./autonomous-input.ts";
 import { calendarDateInZone } from "./user-timezone.ts";
 import {
   getPerformanceSummary,
@@ -68,7 +69,7 @@ async function notifyChat(
   try {
     await sendTelegram(bot, primary, text);
     logger.info(
-      { userId, chatId: primary, chars: text.length },
+      { userId, destinationChatId: primary, chars: text.length },
       "autonomous telegram notify sent",
     );
     return;
@@ -87,7 +88,11 @@ async function notifyChat(
     try {
       await sendTelegram(bot, fallback, text);
       logger.info(
-        { userId, chatId: fallback, via: "telegramUserId" },
+        {
+          userId,
+          destinationChatId: fallback,
+          via: "telegramUserId",
+        },
         "autonomous telegram notify sent",
       );
     } catch (error) {
@@ -220,11 +225,6 @@ export async function runAutonomousTick(
       );
     }
 
-    const identity = {
-      id: row.telegramUserId,
-      username: row.username,
-      first_name: row.firstName || "trader",
-    };
     let excludedMarketIds: string[] = [];
     try {
       const wallet = await findWallet(config, row.telegramUserId);
@@ -282,16 +282,9 @@ export async function runAutonomousTick(
         },
         "autonomous scan started",
       );
-      const result = await runSafeTelegramTradeCycle({
-        config,
-        identity,
-        liveExecutionRequested: shouldRequestLiveExecution(
-          row.executionMode,
-          true,
-        ),
-        stake: row.defaultStake,
-        excludeMarketIds,
-      });
+      const result = await runSafeTelegramTradeCycle(
+        buildAutonomousTradeCycleInput(config, row, excludedMarketIds),
+      );
       logger.info(
         {
           userId: row.userId,

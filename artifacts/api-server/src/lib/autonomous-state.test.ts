@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { AppConfig } from "../config.ts";
+import { buildAutonomousTradeCycleInput } from "./autonomous-input.ts";
 import {
   shouldRunAutonomousTick,
   type AutonomousRow,
@@ -46,4 +48,26 @@ test("skips paused users", () => {
   );
   assert.equal(decision.run, false);
   assert.equal(decision.reason, "paused");
+});
+
+test("builds the autonomous trade input with exclusions and identity", () => {
+  const excludedMarketIds = ["market-1"];
+  const input = buildAutonomousTradeCycleInput(
+    {} as AppConfig,
+    row({
+      telegramUserId: 12345,
+      chatId: 67890,
+      defaultStake: 3,
+    }),
+    excludedMarketIds,
+  );
+
+  assert.deepEqual(input.identity, {
+    id: 12345,
+    username: undefined,
+    first_name: "trader",
+  });
+  assert.equal(input.liveExecutionRequested, true);
+  assert.equal(input.stake, 3);
+  assert.strictEqual(input.excludeMarketIds, excludedMarketIds);
 });
