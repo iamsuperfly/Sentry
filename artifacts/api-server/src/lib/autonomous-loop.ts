@@ -10,7 +10,7 @@ import { findWallet } from "./supabase.ts";
 import { formatMultiTradeReply } from "./telegram-multi-trade-reply.ts";
 import { formatUserFacingTradeFailure } from "./telegram-trade-format.ts";
 import { shouldRequestLiveExecution } from "./telegram-settings.ts";
-import { runTelegramTradeCycle } from "./trade-orchestration.ts";
+import { runSafeTelegramTradeCycle } from "./trade-cycle-safe.ts";
 import {
   listAutonomousCandidates,
   markAutonomousScan,
@@ -282,7 +282,7 @@ export async function runAutonomousTick(
         },
         "autonomous scan started",
       );
-      const result = await runTelegramTradeCycle({
+      const result = await runSafeTelegramTradeCycle({
         config,
         identity,
         liveExecutionRequested: shouldRequestLiveExecution(
@@ -291,7 +291,6 @@ export async function runAutonomousTick(
         ),
         stake: row.defaultStake,
         excludeMarketIds,
-        knownUserId: row.userId,
       });
       logger.info(
         {
