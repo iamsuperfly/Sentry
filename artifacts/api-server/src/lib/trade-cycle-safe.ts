@@ -5,9 +5,9 @@ import {
 } from "./trade-orchestration.ts";
 
 /**
- * Autonomous and /trade both need the cycle to return a result object.
- * An uncaught throw after "autonomous scan started" is what made every
- * tick look like a hard failure and skipped Telegram notify.
+ * Autonomous ticks must not die when the cycle throws after
+ * "autonomous scan started". Convert any throw to a structured failure
+ * so mark/notify/claim still run.
  */
 export async function runSafeTelegramTradeCycle(
   input: Parameters<typeof runTelegramTradeCycle>[0],
@@ -22,7 +22,6 @@ export async function runSafeTelegramTradeCycle(
     logger.warn(
       {
         telegramUserId: input.identity?.id,
-        knownUserId: input.knownUserId,
         err: message,
         stack: error instanceof Error ? error.stack?.slice(0, 800) : undefined,
       },
