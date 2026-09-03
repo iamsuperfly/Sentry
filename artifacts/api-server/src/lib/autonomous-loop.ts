@@ -36,12 +36,35 @@ import {
 
 const INTERVAL_MS = 6 * 60 * 1000;
 
-function notifyChat(bot: Bot, chatId: number | null, telegramUserId: number, text: string) {
+function errText(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message) return error.message.slice(0, 240);
+  return fallback;
+}
+
+async function notifyChat(
+  bot: Bot,
+  chatId: number | null,
+  telegramUserId: number,
+  text: string,
+  userId?: string,
+): Promise<void> {
   const target = chatId && Number.isFinite(chatId) ? chatId : telegramUserId;
-  if (!target) return Promise.resolve();
-  return bot.api.sendMessage(target, text, {
-    link_preview_options: { is_disabled: true },
-  });
+  if (!target) return;
+  try {
+    await bot.api.sendMessage(target, text, {
+      link_preview_options: { is_disabled: true },
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        userId,
+        chatId: target,
+        err: errText(error, "notify"),
+        stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
+      },
+      "autonomous telegram notify failed",
+    );
+  }
 }
 
 async function buildDailyReport(
@@ -112,6 +135,11 @@ export async function runAutonomousTick(
     }
     if (!decision.run) continue;
 
+    logger.info(
+      { userId: row.userId, telegramUserId: row.telegramUserId },
+      "autonomous tick started",
+    );
+
     try {
       const settings = await getUserSettings(config, row.userId);
       const realizedPnlToday = await getRealizedPnlToday(config, row.userId, now);
@@ -176,22 +204,48 @@ export async function runAutonomousTick(
           ),
         });
         excludedMarketIds = managed.excludedMarketIds;
+        logger.info(
+          {
+            userId: row.userId,
+            attempts: managed.attempts.length,
+            excluded: excludedMarketIds.length,
+            exited: managed.attempts.filter((a) => a.status === "exited").length,
+            held: managed.attempts.filter((a) => a.status === "held").length,
+            failed: managed.attempts.filter((a) => a.status === "failed").length,
+          },
+          "autonomous position management result",
+        );
         const note = formatEarlyExitMessage(managed.attempts);
         if (note) {
-          await notifyChat(bot, row.chatId, row.telegramUserId, note);
+          await notifyChat(bot, row.chatId, row.telegramUserId, note, row.userId);
         }
+      } else {
+        logger.info(
+          { userId: row.userId },
+          "autonomous position management skipped (no wallet)",
+        );
       }
     } catch (error) {
       logger.warn(
         {
           userId: row.userId,
-          err: error instanceof Error ? error.message.slice(0, 160) : "manage",
+          err: errText(error, "manage"),
+          stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
         },
         "autonomous position management failed",
       );
     }
 
     try {
+      logger.info(
+        {
+          userId: row.userId,
+          excludeMarketIds: excludedMarketIds.length,
+          liveRequested: shouldRequestLiveExecution(row.executionMode, true),
+          stake: row.defaultStake,
+        },
+        "autonomous scan started",
+      );
       const result = await runTelegramTradeCycle({
         config,
         identity,
@@ -202,7 +256,31 @@ export async function runAutonomousTick(
         stake: row.defaultStake,
         excludeMarketIds,
       });
-      await markAutonomousScan(config, row.userId, row.timezone, now);
+      logger.info(
+        {
+          userId: row.userId,
+          ok: result.ok,
+          code: result.ok ? undefined : result.code,
+          selected: result.ok ? result.marketScan.selected : result.marketScan?.selected,
+          trades: result.ok ? (result.trades?.length ?? 0) : 0,
+          executed: result.ok
+            ? (result.trades ?? []).filter((t) => t.ok && t.execution?.ok).length
+            : 0,
+        },
+        "autonomous scan result",
+      );
+      try {
+        await markAutonomousScan(config, row.userId, row.timezone, now);
+      } catch (error) {
+        logger.warn(
+          {
+            userId: row.userId,
+            err: errText(error, "mark"),
+            stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
+          },
+          "autonomous scan mark failed",
+        );
+      }
       if (!result.ok) {
         const haltCodes = new Set([
           "user_daily_loss_stop",
@@ -217,21 +295,32 @@ export async function runAutonomousTick(
             calendarDateInZone(now, "UTC"),
           );
         }
-        await notifyChat(
-          bot,
-          row.chatId,
-          row.telegramUserId,
-          `Autonomous scan\n\n${formatUserFacingTradeFailure({
+        let failText = `Autonomous scan\n\n${result.code}`;
+        try {
+          failText = `Autonomous scan\n\n${formatUserFacingTradeFailure({
             code: result.code,
             reason: result.reason,
-          })}`,
-        );
+          })}`;
+        } catch (error) {
+          logger.warn(
+            { userId: row.userId, err: errText(error, "format") },
+            "autonomous failure format failed",
+          );
+        }
+        await notifyChat(bot, row.chatId, row.telegramUserId, failText, row.userId);
       } else {
-        await notifyChat(
-          bot,
-          row.chatId,
-          row.telegramUserId,
-          `Autonomous scan\n\n${formatMultiTradeReply({
+        logger.info(
+          {
+            userId: row.userId,
+            tradeId: result.tradeId,
+            executionOk: result.execution.ok,
+            executionStatus: result.execution.ok ? result.execution.status : result.execution.code,
+          },
+          "autonomous execution result",
+        );
+        let okText = `Autonomous scan\n\nTrades: ${result.trades?.length ?? 1}`;
+        try {
+          okText = `Autonomous scan\n\n${formatMultiTradeReply({
             trades: result.trades ?? [],
             fallback: {
               tradeId: result.tradeId,
@@ -243,14 +332,22 @@ export async function runAutonomousTick(
             marketsLine: `selected: ${result.marketScan.selected ?? 0}`,
             executionMode: row.executionMode,
             explorerTxBaseUrl: config.explorerTxBaseUrl,
-          })}`,
-        );
+          })}`;
+        } catch (error) {
+          logger.warn(
+            { userId: row.userId, err: errText(error, "format") },
+            "autonomous success format failed",
+          );
+        }
+        await notifyChat(bot, row.chatId, row.telegramUserId, okText, row.userId);
       }
+      logger.info({ userId: row.userId, ok: result.ok }, "autonomous tick completed");
     } catch (error) {
       logger.warn(
         {
           userId: row.userId,
-          err: error instanceof Error ? error.message.slice(0, 160) : "tick",
+          err: errText(error, "tick"),
+          stack: error instanceof Error ? error.stack?.slice(0, 800) : undefined,
         },
         "autonomous trade tick failed",
       );
