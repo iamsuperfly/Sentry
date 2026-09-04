@@ -40,20 +40,38 @@ function signedPnl(n: number): string {
   return `${n > 0 ? "+" : ""}${n}`;
 }
 
+export function isEarlyExitNote(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  return (
+    /early-loss/i.test(raw) ||
+    /early-exit/i.test(raw) ||
+    /elapsed \d+s/i.test(raw) ||
+    /sellTx=/i.test(raw)
+  );
+}
+
 export function sanitizeTechnicalErrorNote(raw: string | null | undefined): string | null {
   if (!raw) return null;
+  if (isEarlyExitNote(raw)) {
+    return "Closed early to limit the loss.";
+  }
   if (looksLikeIocNoFill("", raw)) {
-    return "No fill at this price. Book moved or size too large. Nothing taken.";
+    return "This order did not fill. Nothing was taken.";
   }
   if (looksLikeAllowanceOrRpc("", raw)) {
-    return "Network or allowance issue. Check /status and try again.";
+    return "Network issue. Try again shortly.";
   }
   if (/enable_live_execution/i.test(raw)) {
     return "Live trading is not enabled on the server.";
   }
-  // Never surface Solidity/SDK exception names or 0x revert blobs.
-  if (/[A-Z][A-Za-z]+(?:NoFill|Reverted|Unauthorized|Error)\(/.test(raw) || /0x[0-9a-f]{8}/i.test(raw)) {
-    return "The trade could not be completed on-chain.";
+  if (/[A-Z][A-Za-z]+(?:NoFill|Reverted|Unauthorized|Error)\(/.test(raw)) {
+    return "The order did not complete.";
+  }
+  if (/revert selector|execution reverted/i.test(raw)) {
+    return "The order did not complete.";
+  }
+  if (/0x[0-9a-f]{8}/i.test(raw) && !/sellTx=/i.test(raw)) {
+    return "The order did not complete.";
   }
   return raw.slice(0, 180);
 }
@@ -75,9 +93,9 @@ export function formatUserFacingTradeFailure(input: {
 
   if (looksLikeIocNoFill(rawCode, reason)) {
     return [
-      "\u26aa No fill",
+      "\u26aa Not filled",
       "",
-      "No fill at this price. Book moved or size too large. Nothing taken.",
+      "This order did not fill. Nothing was taken.",
     ].join("\n");
   }
 
@@ -171,6 +189,6 @@ export function formatUserFacingTradeFailure(input: {
         "No funds were used unless a transaction already confirmed.",
       ].join("\n");
     default:
-      return ["\u26aa No trade placed", "", "The trade could not be completed.", "No funds were used unless an on-chain transaction already confirmed.", "Check /status and try again, or use /help."].join("\n");
+      return ["\u26aa No trade placed", "", "The trade was not completed.", "No funds were used unless a transaction already confirmed."].join("\n");
   }
 }
