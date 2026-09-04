@@ -27,17 +27,28 @@ export function faucetKeyboard(allowSkip: boolean): InlineKeyboard {
 
 export function helpKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
-    .text(BTN.tradingHelp, "app:help_trading")
     .text(BTN.settings, "app:settings")
-    .row()
-    .text(BTN.wallet, "app:wallet")
-    .text(BTN.autoHelp, "app:auto")
     .row()
     .text(BTN.howItWorks, "app:how")
     .row()
-    .text(BTN.claim, "app:claim")
+    .text(BTN.history, "app:history")
+    .row()
+    .text(BTN.leaderboard, "app:leaderboard")
+    .row()
+    .text(BTN.privateKey, "app:pk_warn")
     .row()
     .text(BTN.backMenu, "app:menu");
+}
+
+export function privateKeyWarnKeyboard(): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(BTN.revealKey, "app:pk_reveal")
+    .row()
+    .text(BTN.backHelp, "app:help");
+}
+
+export function privateKeyHideKeyboard(): InlineKeyboard {
+  return new InlineKeyboard().text(BTN.hideKey, "app:pk_hide");
 }
 
 export function settingsKeyboard(): InlineKeyboard {
