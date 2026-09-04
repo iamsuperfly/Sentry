@@ -44,6 +44,13 @@ import { runTelegramTradeCycle } from "../lib/trade-orchestration";
 import { setAutonomousEnabled } from "../lib/autonomous-state";
 import { formatClaimMessage, runUserClaimScan } from "../lib/claim-positions";
 import { resumeAutonomousIfEnabled } from "./register-phase-commands";
+import {
+  hidePrivateKey,
+  revealPrivateKey,
+  showHistory,
+  showLeaderboard,
+  warnPrivateKey,
+} from "./register-help-extras";
 import { clearConversation, getConversation, setConversation } from "./conversation";
 import {
   autoKeyboard,
@@ -356,7 +363,7 @@ async function showPerformance(ctx: Context, config: AppConfig) {
     settings.timezone,
   );
   const decided = performance.wins + performance.losses;
-  const winRate = decided > 0 ? `${Math.round((performance.wins / decided) * 100)}%` : "—";
+  const winRate = decided > 0 ? `${Math.round((performance.wins / decided) * 100)}%` : "\u2014";
   await ctx.reply(
     [formatPerformanceMessage(performance), "", `Win rate: ${winRate}`, `Total decided trades: ${decided}`].join(
       "\n",
@@ -372,7 +379,7 @@ async function showWallet(ctx: Context, config: AppConfig) {
     return;
   }
   const current = await balances(config, wallet.address);
-  const short = `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`;
+  const short = `${wallet.address.slice(0, 6)}\u2026${wallet.address.slice(-4)}`;
   await ctx.reply(
     [
       "Wallet",
@@ -393,7 +400,7 @@ async function runClaim(ctx: Context, config: AppConfig) {
     return;
   }
   const userId = await ensureUser(config, ctx.from!);
-  await ctx.reply("Checking settled positions…");
+  await ctx.reply("Checking settled positions\u2026");
   const attempts = await runUserClaimScan({
     config,
     userId,
@@ -580,5 +587,25 @@ export function registerAppUi(bot: Bot, config: AppConfig): void {
   bot.callbackQuery("app:set_profit", async (ctx) => {
     await ctx.answerCallbackQuery();
     await askSetting(ctx, "dailyProfitTarget", config);
+  });
+  bot.callbackQuery("app:history", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showHistory(ctx, config);
+  });
+  bot.callbackQuery("app:leaderboard", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showLeaderboard(ctx, config);
+  });
+  bot.callbackQuery("app:pk_warn", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await warnPrivateKey(ctx);
+  });
+  bot.callbackQuery("app:pk_reveal", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await revealPrivateKey(ctx, config);
+  });
+  bot.callbackQuery("app:pk_hide", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await hidePrivateKey(ctx);
   });
 }

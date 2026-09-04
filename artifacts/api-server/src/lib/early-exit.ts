@@ -9,6 +9,7 @@ export const EARLY_EXIT_LOSS_FRACTION = 0.5;
 export type EarlyExitPosition = {
   tradeId: string;
   marketId: string;
+  symbol?: string;
   direction: "up" | "down" | string;
   stake: number;
   filledContracts: number | null;

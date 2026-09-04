@@ -37,7 +37,16 @@ Primary UX is buttons, not commands.
 - POSITIONS / PERFORMANCE
 - WALLET / HELP
 
-Help → Settings changes limits by tapping a field and typing one number.
+Help:
+
+- SETTINGS
+- HOW IT WORKS
+- HISTORY
+- LEADERBOARD
+- PRIVATE KEY (warning first, then a copyable key that auto-deletes after 60 seconds)
+
+Claim reports list only newly claimed positions. Otherwise they say "No new claims."
+Successful early exits are reported as CLOSED EARLY, not as on-chain failures.
 
 Legacy commands (`/trade`, `/auto`, `/settings`, `/faucet`, `/status`, `/positions`, `/history`, `/claim`, `/leaderboard`, `/fund`, `/privatekey`) still work. `/stop` only pauses autonomous trading; TRADE NOW stays available.
 

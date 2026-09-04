@@ -4,7 +4,7 @@
  */
 
 import { resolveMarketDurationSeconds } from "./decision-market-meta.ts";
-import { sanitizeTechnicalErrorNote } from "./telegram-user-errors.ts";
+import { isEarlyExitNote, sanitizeTechnicalErrorNote } from "./telegram-user-errors.ts";
 
 export function parseUnixSeconds(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined) return null;
@@ -318,13 +318,16 @@ export function formatFinalizationMessage(input: {
   const kind = classifyFinalization(input);
   const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry, input.intervalSec);
   const timeframe = formatTimeframe(duration);
+  const early = isEarlyExitNote(input.errorMessage);
   const header =
-    kind === "win" ? "\u2705 Trade finalized"
+    early ? "CLOSED EARLY"
+    : kind === "win" ? "\u2705 Trade finalized"
     : kind === "loss" ? "\u274c Trade finalized"
     : kind === "failed" || kind === "cancelled" ? "\u26a0\ufe0f Trade closed"
     : "\u2139\ufe0f Trade finalized";
   const resultLabel =
-    kind === "win" ? "WIN"
+    early ? "CLOSED EARLY"
+    : kind === "win" ? "WIN"
     : kind === "loss" ? "LOSS"
     : kind === "void" ? "VOID"
     : kind === "failed" ? "FAILED"

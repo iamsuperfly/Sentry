@@ -47,33 +47,7 @@ export type ClaimAttempt = {
   transactionHash?: string;
 };
 
-function formatClaimLine(a: ClaimAttempt): string {
-  const head = `${a.symbol} ${a.direction.toUpperCase()}`;
-  const lines = [`${head}`, `   Status: ${a.status}`];
-  if (a.payoutEstimate != null && a.status === "claimed") {
-    lines.push(`   Payout: ${a.payoutEstimate} tUSDC`);
-  }
-  if (a.transactionHash) lines.push(`   Tx: ${a.transactionHash}`);
-  if (a.status !== "claimed") lines.push(`   ${a.reason}`);
-  return lines.join("\n");
-}
-
-export function formatClaimMessage(attempts: ClaimAttempt[]): string {
-  if (attempts.length === 0) {
-    return "No claimable positions found.";
-  }
-  const claimed = attempts.filter((a) => a.status === "claimed").length;
-  const skipped = attempts.filter((a) => a.status === "skipped").length;
-  return [
-    "Claim scan",
-    "",
-    `Found: ${attempts.length} settled positions`,
-    `Claimed: ${claimed}`,
-    `Skipped: ${skipped}`,
-    "",
-    ...attempts.map((a, i) => `${i + 1}. ${formatClaimLine(a)}`),
-  ].join("\n");
-}
+export { formatClaimMessage } from "./telegram-claim-format.ts";
 
 export async function listSettledTradesForClaim(
   config: AppConfig,
