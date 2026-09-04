@@ -26,22 +26,20 @@ Users get a dedicated wallet, faucet tUSDC, scan live BTC/ETH markets, take trad
 - Groq OpenAI-compatible API for 5m/15m+ decisions
 - Binance public ticker for 1m only (no API key)
 
-## Telegram commands
+## Telegram app
 
-- `/start` — create or resume the dedicated wallet
-- `/faucet <amount>` — request tUSDC (500 / UTC day)
-- `/status` — wallet, balances, settings, today + all-time PnL
-- `/settings` — stake, max stake, daily loss, open positions, trading on/off
-- `/trade` — one scan: 1m Binance if applicable, otherwise Groq
-- `/auto on|off|status` — opt-in 6-minute autonomous scans + auto-claim
-- `/leaderboard` — all-time top 10 plus your ranks
-- `/positions` — open positions on markets that have not expired
-- `/history` — latest completed trades with reconstructed PnL
-- `/claim` — redeem settled winning outcome tokens into tUSDC
-- `/stop` — disable trading and autonomous mode (history kept)
-- `/fund` — resume interrupted STT funding
-- `/privatekey` — export key (message auto-deletes)
-- `/help`
+Primary UX is buttons, not commands.
+
+`/start` → GET TEST TOKENS (default 100 tUSDC, skip if you already have a balance) → guided numeric setup (default stake, max stake, max daily loss, max open positions, daily profit target) → persistent keyboard:
+
+- TRADE NOW
+- AUTONOMOUS ON/OFF
+- POSITIONS / PERFORMANCE
+- WALLET / HELP
+
+Help → Settings changes limits by tapping a field and typing one number.
+
+Legacy commands (`/trade`, `/auto`, `/settings`, `/faucet`, `/status`, `/positions`, `/history`, `/claim`, `/leaderboard`, `/fund`, `/privatekey`) still work. `/stop` only pauses autonomous trading; TRADE NOW stays available.
 
 There is no paper mode and no `/timezone`. Daily PnL, faucet, daily loss, daily leaderboard, and autonomous cutoff all use **UTC midnight**.
 
