@@ -1,12 +1,15 @@
 import type { Bot } from "grammy";
 import type { AppConfig } from "../config";
-import { ensureUser, findWallet } from "../lib/supabase";
+import { ensureUser } from "../lib/supabase";
 import { getLeaderboardMessage } from "../lib/leaderboard-persist";
 import {
   clearAutonomousPause,
   setAutonomousEnabled,
 } from "../lib/autonomous-state";
-import { getUserSettingsForTelegram } from "../lib/trade-persistence";
+import {
+  getUserSettingsForTelegram,
+  saveUserSettingsForTelegram,
+} from "../lib/trade-persistence";
 
 function safeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
@@ -43,12 +46,9 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
           [
             `Autonomous trading: ${settings.autonomousEnabled ? "ON" : "OFF"}`,
             settings.autonomousPausedAt
-              ? "Status: paused for the UTC day. Send /trade or /auto on to resume."
+              ? "Status: paused for the UTC day. Send TRADE NOW or start autonomous to resume."
               : "Status: active when ON.",
             "Auto-claim is tied to this toggle.",
-            "",
-            "/auto on — enable 6-minute scans",
-            "/auto off — disable",
           ].join("\n"),
         );
         return;
@@ -56,10 +56,11 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
       if (raw === "on" || raw === "off") {
         const enabled = raw === "on";
         if (enabled && !settings.tradingEnabled) {
-          await ctx.reply(
-            "Enable trading first with /settings trading on, then /auto on.",
-          );
-          return;
+          await saveUserSettingsForTelegram(config, identity, {
+            ...settings,
+            tradingEnabled: true,
+            executionMode: "testnet",
+          });
         }
         await setAutonomousEnabled(
           config,
@@ -69,8 +70,8 @@ export function registerPhaseCommands(bot: Bot, config: AppConfig): void {
         );
         await ctx.reply(
           enabled
-            ? "Autonomous trading ON.\nScans every 6 minutes using the same /trade pipeline.\nAutomatic claiming is also ON.\nStops at UTC midnight until you send /trade or /auto on."
-            : "Autonomous trading OFF.\nAutomatic claiming is also OFF.\nManual /trade and /claim still work.",
+            ? "Autonomous trading ON.\nScans every 6 minutes using the same trade pipeline.\nAutomatic claiming is also ON."
+            : "Autonomous trading OFF.\nAutomatic claiming is also OFF.\nManual TRADE NOW and claim still work.",
         );
         return;
       }
