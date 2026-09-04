@@ -66,11 +66,11 @@ import {
   shouldRequestLiveExecution,
 } from "../lib/telegram-settings";
 import {
-  disableTradingForTelegram,
   getRealizedPnlToday,
   getUserSettingsForTelegram,
   saveUserSettingsForTelegram,
 } from "../lib/trade-persistence";
+import { setAutonomousEnabled } from "../lib/autonomous-state";
 import { getActiveOpenPositionCount } from "../lib/active-positions";
 import {
   formatHistoryMessage,
@@ -91,6 +91,11 @@ import {
   registerPhaseCommands,
   resumeAutonomousIfEnabled,
 } from "./register-phase-commands";
+import {
+  handleConversationText,
+  registerAppUi,
+  startAppOnboarding,
+} from "./register-app-ui";
 
 const active = new Set<number>();
 const lastStart = new Map<number, number>();
@@ -264,7 +269,7 @@ async function runFunding(
 
   const finalBalance = await balances(config, wallet.address);
   await ctx.reply(
-    `✅ Wallet setup is complete.\n\nAddress: ${wallet.address}\nSTT: ${finalBalance.stt}\ntUSDC: ${finalBalance.tusdc}\n\nYou can request tUSDC with /faucet <amount>. Configure risk with /settings, then enable trading when ready.`,
+    `✅ Wallet ready.\n\nAddress: ${wallet.address}\nSTT: ${finalBalance.stt}\ntUSDC: ${finalBalance.tusdc}`,
   );
 }
 
@@ -400,6 +405,7 @@ async function start(ctx: Context, config: AppConfig) {
         : `Your dedicated wallet is ready.\n\nAddress: ${saved.address}`,
     );
     await runFunding(ctx, config, userId, saved);
+    await startAppOnboarding(ctx, config);
   } catch (error) {
     await ctx.reply(
       `❌ Onboarding could not be completed.\n\nReason: ${safeError(error)}`,
@@ -449,12 +455,13 @@ export function createTelegramBot(config: AppConfig): Bot {
         first_name: ctx.from.first_name,
         last_name: ctx.from.last_name,
       };
-      const settings = await getUserSettingsForTelegram(config, identity);
+      let settings = await getUserSettingsForTelegram(config, identity);
       if (!settings.tradingEnabled) {
-        await ctx.reply(
-          "Trading is disabled for your account.\n\nEnable it with /settings trading on, or review /settings.",
-        );
-        return;
+        settings = await saveUserSettingsForTelegram(config, identity, {
+          ...settings,
+          tradingEnabled: true,
+          executionMode: "testnet",
+        });
       }
       if (settings.autonomousEnabled) {
         await resumeAutonomousIfEnabled(
@@ -516,24 +523,12 @@ export function createTelegramBot(config: AppConfig): Bot {
   bot.command("help", (ctx) =>
     ctx.reply(
       [
-        "DreamDEX Event Contracts bot",
+        "DreamEventBot",
         "",
-        "/start — create or resume your wallet",
-        "/faucet <amount> — request tUSDC (up to 500/local day)",
-        "/status — wallet, balances, trading state, and PnL",
-        "/settings — view or change limits (e.g. max stake 30)",
-        "/trade — evaluate markets and place trades when conditions match",
-        "/auto on|off — opt-in 15-minute autonomous scans",
-        "/leaderboard — all-time top 10 plus your ranks",
-        "/timezone — set IANA timezone (default Africa/Lagos)",
-        "/positions — open positions only",
-        "/history — completed, failed, or cancelled trades",
-        "/stop — disable trading and autonomous mode",
-        "/claim — redeem settled winning positions into tUSDC",
-        "/fund — recover interrupted gas funding",
-        "/privatekey — export private key (message auto-deletes)",
+        "Use the buttons below the chat.",
+        "Help → Settings to change stake and limits.",
         "",
-        "Paper mode never sends on-chain orders. Switch with /settings mode paper|testnet.",
+        "TRADE NOW runs one scan. AUTONOMOUS repeats it every 6 minutes.",
       ].join("\n"),
     ),
   );
@@ -564,17 +559,16 @@ export function createTelegramBot(config: AppConfig): Bot {
   bot.command("stop", async (ctx) => {
     try {
       if (!ctx.from) return;
-      const settings = await disableTradingForTelegram(config, {
+      const settings = await getUserSettingsForTelegram(config, {
         id: ctx.from.id,
         username: ctx.from.username,
         first_name: ctx.from.first_name,
         last_name: ctx.from.last_name,
       });
-      await ctx.reply(
-        `Trading disabled for your account.\n\nAutonomous trading is also off.\nHistory and positions are kept.\nTrading enabled: ${settings.tradingEnabled}\n\nRe-enable with /settings trading on.`,
-      );
+      await setAutonomousEnabled(config, settings.userId, false, ctx.chat?.id ?? ctx.from.id);
+      await ctx.reply("Autonomous trading is paused.\n\nTRADE NOW still works.");
     } catch (error) {
-      await ctx.reply(`Unable to stop trading.\n\nReason: ${safeError(error)}`);
+      await ctx.reply(`Unable to pause autonomous trading.\n\nReason: ${safeError(error)}`);
     }
   });
   bot.command("settings", async (ctx) => {
@@ -708,9 +702,13 @@ export function createTelegramBot(config: AppConfig): Bot {
   });
   registerClaimCommand(bot, config);
   registerPhaseCommands(bot, config);
-  bot.on("message:text", (ctx) =>
-    ctx.reply("I do not recognize that command. Use /help."),
-  );
+  registerAppUi(bot, config);
+  bot.on("message:text", async (ctx) => {
+    const handled = await handleConversationText(ctx, config);
+    if (!handled) {
+      await ctx.reply("Use the buttons below the chat, or tap Help.");
+    }
+  });
   bot.catch((error) =>
     logger.error(
       { err: safeError(error.error), updateId: error.ctx.update.update_id },
