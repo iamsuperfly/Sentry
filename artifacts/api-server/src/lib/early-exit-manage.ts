@@ -6,6 +6,7 @@
 import { parseUnits, type Hex, type Address } from "viem";
 import { ORDER_TYPE } from "@somnia-chain/markets-sdk";
 import type { AppConfig } from "../config.ts";
+import { soldCostBasis } from "./cost-basis.ts";
 import { logger } from "./logger.ts";
 import { getSupabaseClient } from "./supabase.ts";
 import { decryptPrivateKey } from "./wallet-crypto.ts";
@@ -19,10 +20,15 @@ import {
 export type EarlyExitAttempt = {
   tradeId: string;
   marketId: string;
-  status: "exited" | "held" | "failed";
+  symbol?: string;
+  status: "exited" | "held" | "failed" | "partial";
   code?: string;
   reason: string;
   transactionHash?: string;
+  proceeds?: number;
+  pnl?: number;
+  soldContracts?: number;
+  remainingContracts?: number;
 };
 
 function num(v: unknown): number | null {
@@ -38,6 +44,14 @@ function decisionField(decision: unknown, key: string): string | number | null {
   return null;
 }
 
+function assetLabel(position: EarlyExitPosition): string {
+  const raw = (position.symbol ?? position.marketId).toUpperCase();
+  const asset = raw.includes("ETH") ? "ETH" : raw.includes("BTC") ? "BTC" : raw.slice(0, 8);
+  const side = String(position.direction).toLowerCase();
+  const dir = side === "down" || side === "no" ? "DOWN" : "UP";
+  return `${asset} ${dir}`;
+}
+
 export async function listManageablePositions(
   config: AppConfig,
   userId: string,
@@ -45,7 +59,7 @@ export async function listManageablePositions(
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
     .select(
-      "id, market_id, direction, status, stake_usdso, filled_contracts, limit_price, filled_at, submitted_at, decision",
+      "id, market_id, symbol, direction, status, stake_usdso, filled_contracts, limit_price, filled_at, submitted_at, decision",
     )
     .eq("user_id", userId)
     .in("status", ["filled", "partially_filled"]);
@@ -56,6 +70,7 @@ export async function listManageablePositions(
     return {
       tradeId: String(r.id),
       marketId: String(r.market_id),
+      symbol: String(r.symbol ?? ""),
       direction: String(r.direction ?? ""),
       stake: Number(r.stake_usdso ?? 0),
       filledContracts: num(r.filled_contracts),
@@ -88,6 +103,26 @@ async function markCancelled(input: {
     .eq("user_id", input.userId)
     .in("status", ["filled", "partially_filled"]);
   if (error) throw new Error("Unable to persist early-exit close.");
+}
+
+async function reduceOpenInventory(input: {
+  config: AppConfig;
+  userId: string;
+  tradeId: string;
+  remainingContracts: number;
+  remainingStake: number;
+}): Promise<void> {
+  const { error } = await getSupabaseClient(input.config)
+    .from("trades")
+    .update({
+      status: "partially_filled",
+      filled_contracts: input.remainingContracts,
+      stake_usdso: input.remainingStake,
+    })
+    .eq("id", input.tradeId)
+    .eq("user_id", input.userId)
+    .in("status", ["filled", "partially_filled"]);
+  if (error) throw new Error("Unable to persist remaining inventory after partial early-exit.");
 }
 
 function rawToHuman(raw: bigint, decimals: number): number {
@@ -136,6 +171,7 @@ export async function manageOpenPositions(input: {
           attempts.push({
             tradeId: position.tradeId,
             marketId: position.marketId,
+            symbol: position.symbol,
             status: "held",
             code: "market_not_trading",
             reason: `On-chain status ${onchain.status} is not Trading.`,
@@ -164,6 +200,7 @@ export async function manageOpenPositions(input: {
           attempts.push({
             tradeId: position.tradeId,
             marketId: position.marketId,
+            symbol: position.symbol,
             status: "held",
             code: decision.code,
             reason: decision.reason,
@@ -182,6 +219,7 @@ export async function manageOpenPositions(input: {
           attempts.push({
             tradeId: position.tradeId,
             marketId: position.marketId,
+            symbol: position.symbol,
             status: "held",
             code: "invalid_sell",
             reason: "Could not encode a valid SELL price/size.",
@@ -206,6 +244,7 @@ export async function manageOpenPositions(input: {
           attempts.push({
             tradeId: position.tradeId,
             marketId: position.marketId,
+            symbol: position.symbol,
             status: "failed",
             code: "ioc_no_fill",
             reason: "Early-exit sell did not fill. Position left open.",
@@ -220,7 +259,49 @@ export async function manageOpenPositions(input: {
           const own = position.direction === "down" ? 1 - yesPrice : yesPrice;
           return total + qty * own;
         }, 0);
-        const pnl = proceeds - position.stake;
+        const costSold = soldCostBasis({
+          positionStake: position.stake,
+          positionContracts: contracts,
+          soldContracts: filled,
+        });
+        const pnl = Math.round((proceeds - costSold) * 1e6) / 1e6;
+        const remaining = Math.max(0, contracts - filled);
+        const remainingStake = Math.round((position.stake - costSold) * 1e6) / 1e6;
+
+        if (remaining > 1e-6) {
+          await reduceOpenInventory({
+            config: input.config,
+            userId: input.userId,
+            tradeId: position.tradeId,
+            remainingContracts: remaining,
+            remainingStake: Math.max(0, remainingStake),
+          });
+          logger.info(
+            {
+              tradeId: position.tradeId,
+              sold: filled,
+              remaining,
+              proceeds,
+              pnl,
+            },
+            "early-loss partial sell kept remainder",
+          );
+          excluded.add(position.marketId);
+          attempts.push({
+            tradeId: position.tradeId,
+            marketId: position.marketId,
+            symbol: position.symbol,
+            status: "partial",
+            reason: "Partial early-exit sell; remainder stays open.",
+            transactionHash: result.hash,
+            proceeds,
+            pnl,
+            soldContracts: filled,
+            remainingContracts: remaining,
+          });
+          continue;
+        }
+
         await markCancelled({
           config: input.config,
           userId: input.userId,
@@ -232,9 +313,14 @@ export async function manageOpenPositions(input: {
         attempts.push({
           tradeId: position.tradeId,
           marketId: position.marketId,
+          symbol: position.symbol,
           status: "exited",
-          reason: `${decision.reason} Sold ${filled.toFixed(3)} contracts.`,
+          reason: decision.reason,
           transactionHash: result.hash,
+          proceeds,
+          pnl,
+          soldContracts: filled,
+          remainingContracts: 0,
         });
       } catch (error) {
         const message =
@@ -246,6 +332,7 @@ export async function manageOpenPositions(input: {
         attempts.push({
           tradeId: position.tradeId,
           marketId: position.marketId,
+          symbol: position.symbol,
           status: "failed",
           code: "exit_error",
           reason: message,
@@ -268,9 +355,36 @@ export function formatEarlyExitMessage(attempts: EarlyExitAttempt[]): string | n
   return [
     "Position management",
     "",
-    ...notable.map(
-      (a, i) =>
-        `${i + 1}. ${a.marketId.slice(0, 12)}… ${a.status}${a.reason ? `\n   ${a.reason.slice(0, 160)}` : ""}`,
-    ),
+    ...notable.map((a) => {
+      const title = assetLabel({
+        tradeId: a.tradeId,
+        marketId: a.marketId,
+        symbol: a.symbol,
+        direction: a.symbol?.toLowerCase().includes("down") ? "down" : "up",
+        stake: 0,
+        filledContracts: null,
+        entryPrice: null,
+        filledAt: null,
+        submittedAt: null,
+        marketExpiry: null,
+        status: "filled",
+      } as EarlyExitPosition);
+      if (a.status === "failed") {
+        return `${title} stay open\nNothing was taken at this price.`;
+      }
+      const proceeds =
+        a.proceeds !== undefined && Number.isFinite(a.proceeds)
+          ? `\nProceeds: ${Math.round(a.proceeds * 1e4) / 1e4} tUSDC`
+          : "";
+      const pnl =
+        a.pnl !== undefined && Number.isFinite(a.pnl)
+          ? `\nPnL: ${a.pnl > 0 ? "+" : ""}${Math.round(a.pnl * 1e4) / 1e4} tUSDC`
+          : "";
+      const remain =
+        a.status === "partial" && a.remainingContracts
+          ? `\nRemainder still open: ${Math.round(a.remainingContracts * 1e3) / 1e3}`
+          : "";
+      return `${title} closed early${proceeds}${pnl}${remain}`;
+    }),
   ].join("\n");
 }
