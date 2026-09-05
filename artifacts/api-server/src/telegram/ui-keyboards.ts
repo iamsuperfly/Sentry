@@ -51,6 +51,17 @@ export function privateKeyHideKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text(BTN.hideKey, "app:pk_hide");
 }
 
+/** Copy uses Telegram copy_text — never callback_data. */
+export function privateKeyRevealKeyboard(privateKey: string): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  kb.row({
+    text: "COPY KEY",
+    copy_text: { text: privateKey },
+  } as unknown as { text: string; callback_data: string });
+  kb.text(BTN.hideKey, "app:pk_hide");
+  return kb;
+}
+
 export function settingsKeyboard(): InlineKeyboard {
   return new InlineKeyboard()
     .text(BTN.changeStake, "app:set_stake")
