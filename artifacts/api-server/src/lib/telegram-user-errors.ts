@@ -23,6 +23,19 @@ export function looksLikeIocNoFill(code: string, reason?: string | null): boolea
   return /immediate\s*or\s*cancel\s*no\s*fill/i.test(blob) || /immediateorcancelnofill/i.test(blob);
 }
 
+export function looksLikeBookMiss(code: string, reason?: string | null): boolean {
+  const blob = `${code}\n${reason ?? ""}`;
+  return (
+    /book_stale/i.test(blob) ||
+    /no_usable_ask/i.test(blob) ||
+    /insufficient_liquidity/i.test(blob) ||
+    /intended limit/i.test(blob) ||
+    /live (yes|no) ask/i.test(blob) ||
+    /ask size .+ below contracts/i.test(blob) ||
+    /no live .+ ask/i.test(blob)
+  );
+}
+
 export function looksLikeAllowanceOrRpc(code: string, reason?: string | null): boolean {
   const blob = `${code}\n${reason ?? ""}`.toLowerCase();
   return (
@@ -46,17 +59,20 @@ export function isEarlyExitNote(raw: string | null | undefined): boolean {
     /early-loss/i.test(raw) ||
     /early-exit/i.test(raw) ||
     /elapsed \d+s/i.test(raw) ||
-    /sellTx=/i.test(raw)
+    /sellTx=/i.test(raw) ||
+    /closed early/i.test(raw)
   );
 }
+
+const NOTHING_TAKEN = "Nothing was taken at this price. No funds were used.";
 
 export function sanitizeTechnicalErrorNote(raw: string | null | undefined): string | null {
   if (!raw) return null;
   if (isEarlyExitNote(raw)) {
     return "Closed early to limit the loss.";
   }
-  if (looksLikeIocNoFill("", raw)) {
-    return "This order did not fill. Nothing was taken.";
+  if (looksLikeIocNoFill("", raw) || looksLikeBookMiss("", raw)) {
+    return NOTHING_TAKEN;
   }
   if (looksLikeAllowanceOrRpc("", raw)) {
     return "Network issue. Try again shortly.";
@@ -65,13 +81,16 @@ export function sanitizeTechnicalErrorNote(raw: string | null | undefined): stri
     return "Live trading is not enabled on the server.";
   }
   if (/[A-Z][A-Za-z]+(?:NoFill|Reverted|Unauthorized|Error)\(/.test(raw)) {
-    return "The order did not complete.";
+    return NOTHING_TAKEN;
   }
   if (/revert selector|execution reverted/i.test(raw)) {
     return "The order did not complete.";
   }
   if (/0x[0-9a-f]{8}/i.test(raw) && !/sellTx=/i.test(raw)) {
     return "The order did not complete.";
+  }
+  if (/selected:\s*\d+/i.test(raw) || /^mode:\s*/i.test(raw)) {
+    return null;
   }
   return raw.slice(0, 180);
 }
@@ -91,12 +110,8 @@ export function formatUserFacingTradeFailure(input: {
   const pnlLine =
     pnl !== null && Number.isFinite(pnl) ? `Today's PnL: ${signedPnl(pnl)} tUSDC` : null;
 
-  if (looksLikeIocNoFill(rawCode, reason)) {
-    return [
-      "\u26aa Not filled",
-      "",
-      "This order did not fill. Nothing was taken.",
-    ].join("\n");
+  if (looksLikeIocNoFill(rawCode, reason) || looksLikeBookMiss(rawCode, reason)) {
+    return ["⚪ Not filled", "", NOTHING_TAKEN].join("\n");
   }
 
   if (
@@ -110,11 +125,7 @@ export function formatUserFacingTradeFailure(input: {
     code === "ai_schema_mismatch" ||
     /groq/i.test(reason)
   ) {
-    return [
-      "\u26aa Signal service unavailable",
-      "",
-      "No trade sent.",
-    ].join("\n");
+    return ["⚪ Signal service unavailable", "", "No trade sent."].join("\n");
   }
 
   if (
@@ -123,38 +134,38 @@ export function formatUserFacingTradeFailure(input: {
     code === "broadcast_uncertain"
   ) {
     return [
-      "\u26aa Network or allowance issue",
+      "⚪ Network or allowance issue",
       "",
-      "Check /status and try again shortly.",
+      "Check status and try again shortly.",
       "No funds were used unless a transaction already confirmed.",
     ].join("\n");
   }
 
   switch (code) {
     case "no_enter_decision":
-      return ["\u26aa No trade placed", "", "No market currently meets the strategy's conditions.", "No funds were used."].join("\n");
+      return ["⚪ No trade placed", "", "No market currently meets the conditions.", "No funds were used."].join("\n");
     case "trading_disabled":
-      return ["\u26aa Trading is turned off", "", "Enable it with /settings trading on, or review /settings."].join("\n");
+      return ["⚪ Trading is turned off", "", "Use Settings if you need to review limits."].join("\n");
     case "markets_unavailable":
-      return ["\u26aa Markets unavailable", "", "Could not load market data right now. Try again shortly.", "No funds were used."].join("\n");
+      return ["⚪ Markets unavailable", "", "Could not load market data right now. Try again shortly.", "No funds were used."].join("\n");
     case "live_execution_disabled":
     case "live_not_requested":
-      return ["\u26aa Order not submitted on-chain", "", "Live trading is not enabled on the server.", "Your trade intent may still be recorded."].join("\n");
+      return ["⚪ Order not submitted on-chain", "", "Live trading is not enabled on the server."].join("\n");
     case "stake_exceeds_user_max":
     case "stake_above_system_max":
     case "stake_below_system_min":
     case "stake_above_user_max":
     case "stake_below_min":
-      return ["\u26aa Stake not allowed", "", "The requested stake is outside your limits. Check /settings.", "No funds were used."].join("\n");
+      return ["⚪ Stake not allowed", "", "The requested stake is outside your limits.", "No funds were used."].join("\n");
     case "user_max_open_positions":
     case "system_max_open_positions":
-      return ["\u26aa Position limit reached", "", "You already have the maximum number of open trades.", "Close or wait for positions to finish, or raise the limit in /settings.", "No funds were used."].join("\n");
+      return ["⚪ Position limit reached", "", "You already have the maximum number of open trades.", "No funds were used."].join("\n");
     case "max_daily_loss":
     case "daily_loss_limit":
     case "user_daily_loss_stop":
     case "system_daily_loss_stop":
       return [
-        "\u26aa Daily loss limit reached",
+        "⚪ Daily loss limit reached",
         "",
         pnlLine ?? "No new trades until the next UTC day.",
         "Resets at the next UTC midnight.",
@@ -164,7 +175,7 @@ export function formatUserFacingTradeFailure(input: {
     case "daily_profit_target":
     case "daily_profit_target_reached":
       return [
-        "\u26aa Daily profit target reached",
+        "⚪ Daily profit target reached",
         "",
         pnlLine ?? "New trades are paused until the next UTC day.",
         "Resets at the next UTC midnight.",
@@ -173,22 +184,17 @@ export function formatUserFacingTradeFailure(input: {
     case "insufficient_collateral":
     case "insufficient_balance":
     case "insufficient_tusdc":
-      return ["\u26aa Insufficient tUSDC", "", "Add funds with /faucet or check /status.", "No trade was placed."].join("\n");
+      return ["⚪ Insufficient tUSDC", "", "Add funds from the faucet or check Wallet.", "No trade was placed."].join("\n");
     case "unauthenticated":
-      return ["\u26aa Wallet not ready", "", "Use /start first to create your wallet."].join("\n");
+      return ["⚪ Wallet not ready", "", "Tap Start first to create your wallet."].join("\n");
     case "persist_failed":
     case "missing_trade_id":
     case "stale_intent_cleanup_failed":
-      return ["\u26aa Could not record the trade", "", "Please try again in a moment. No on-chain order was sent."].join("\n");
+      return ["⚪ Could not record the trade", "", "Please try again in a moment. No on-chain order was sent."].join("\n");
     case "submission_failed":
     case "submission_error":
-      return [
-        "\u26aa Order did not complete",
-        "",
-        "Nothing was taken at this price, or the network rejected the send.",
-        "No funds were used unless a transaction already confirmed.",
-      ].join("\n");
+      return ["⚪ Order did not complete", "", NOTHING_TAKEN].join("\n");
     default:
-      return ["\u26aa No trade placed", "", "The trade was not completed.", "No funds were used unless a transaction already confirmed."].join("\n");
+      return ["⚪ No trade placed", "", "The trade was not completed.", "No funds were used unless a transaction already confirmed."].join("\n");
   }
 }
