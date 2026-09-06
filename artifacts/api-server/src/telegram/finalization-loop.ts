@@ -6,8 +6,6 @@
 import type { Bot } from "grammy";
 import type { AppConfig } from "../config";
 import { logger } from "../lib/logger";
-import { readDreamdexMarkets } from "../lib/dreamdex";
-import { marketLifecycleFromDiagnostic } from "../lib/position-lifecycle";
 import {
   applyMarketResolveFinalization,
   buildFinalizationTelegramText,
@@ -17,6 +15,7 @@ import {
 } from "../lib/trade-finalization";
 import { readResolvedMarketOnchain } from "../lib/resolved-market";
 import { backfillMissingPnl } from "../lib/pnl-backfill-persist";
+import { createInFlightGuard } from "../lib/finalization-guard";
 
 const TICK_MS = 45_000;
 
@@ -29,34 +28,19 @@ export function startFinalizationLoop(
   async function tick() {
     if (stopped) return;
     try {
-      let marketById = new Map<
-        string,
-        ReturnType<typeof marketLifecycleFromDiagnostic>
-      >();
-      try {
-        const snapshot = await readDreamdexMarkets(config);
-        marketById = new Map(
-          snapshot.markets.map((m) => [
-            m.marketId,
-            marketLifecycleFromDiagnostic(m),
-          ]),
-        );
-      } catch (error) {
-        logger.error(
-          {
-            err: error instanceof Error ? error.message : String(error),
-          },
-          "Finalization market snapshot failed; falling back to on-chain lookup",
-        );
-      }
-
       const open = await listOpenTradesForFinalization(config, { limit: 40 });
+      const marketById = new Map<
+        string,
+        ReturnType<typeof readResolvedMarketOnchain>
+      >();
       for (const trade of open) {
         try {
-          let market = marketById.get(trade.marketId) ?? null;
-          if (!market) {
-            market = await readResolvedMarketOnchain(config, trade.marketId);
+          let marketPromise = marketById.get(trade.marketId);
+          if (!marketPromise) {
+            marketPromise = readResolvedMarketOnchain(config, trade.marketId);
+            marketById.set(trade.marketId, marketPromise);
           }
+          const market = await marketPromise;
           await applyMarketResolveFinalization(config, trade, market);
         } catch (error) {
           logger.error(
@@ -114,17 +98,19 @@ export function startFinalizationLoop(
     }
   }
 
+  const runIfIdle = createInFlightGuard();
   const handle = setInterval(() => {
-    void tick();
+    void runIfIdle(tick);
   }, TICK_MS);
-  setTimeout(() => {
-    void tick();
+  const initial = setTimeout(() => {
+    void runIfIdle(tick);
   }, 8_000);
 
   return {
     stop: () => {
       stopped = true;
       clearInterval(handle);
+      clearTimeout(initial);
     },
   };
 }
