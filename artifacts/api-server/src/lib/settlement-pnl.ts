@@ -9,6 +9,8 @@
  * Does not invent outcomes: requires explicit on-chain resolution evidence.
  */
 
+import { realizedStakeBasis } from "./cost-basis.ts";
+
 export type BinaryDirection = "up" | "down";
 
 export type MarketResolution =
@@ -17,7 +19,6 @@ export type MarketResolution =
   | { kind: "resolved"; winner: BinaryDirection }
   | { kind: "unknown_resolved"; reason: string };
 
-/** On-chain status enum from dreamDEX market structure docs. */
 export const ONCHAIN_STATUS = {
   LISTED: 0,
   TRADING: 1,
@@ -27,15 +28,10 @@ export const ONCHAIN_STATUS = {
   VOIDED: 5,
 } as const;
 
-/**
- * Map raw on-chain / indexer fields into a resolution verdict.
- * Never guesses YES/NO from price — only from explicit winner fields or void status.
- */
 export function mapMarketResolution(input: {
   onchainStatus?: number | null;
   finalized?: boolean | null;
   indexerStatus?: string | null;
-  /** 0/1, "yes"/"no", "up"/"down", or boolean for YES-won. */
   winningOutcome?: unknown;
   outcome?: unknown;
   result?: unknown;
@@ -117,18 +113,16 @@ export type PnlComputation =
       payout: number;
       pnl: number;
       won: boolean | null;
+      stakeUsed: number;
     }
   | { ok: false; reason: string };
 
-/**
- * Binary contract economics (dreamDEX): winner redeems 1 per contract; void 0.5.
- * Requires filled contract size for payout math; stake alone is not enough for wins.
- */
 export function computeBinarySettlementPnl(input: {
   direction: string;
   stake: number;
   filledContracts: number | null;
   contracts?: number | null;
+  limitPrice?: number | null;
   resolution: MarketResolution;
 }): PnlComputation {
   const direction = normalizeDirection(input.direction);
@@ -152,6 +146,13 @@ export function computeBinarySettlementPnl(input: {
         ? input.contracts
         : null;
 
+  const stakeUsed = realizedStakeBasis({
+    requestedStake: input.stake,
+    filledContracts: input.filledContracts,
+    plannedContracts: input.contracts ?? null,
+    limitPrice: input.limitPrice ?? null,
+  });
+
   if (input.resolution.kind === "not_ready") {
     return { ok: false, reason: input.resolution.reason };
   }
@@ -171,23 +172,23 @@ export function computeBinarySettlementPnl(input: {
       ok: true,
       outcome: "void",
       payout,
-      pnl: payout - input.stake,
+      pnl: payout - stakeUsed,
       won: null,
+      stakeUsed,
     };
   }
 
-  // resolved
   const winner = input.resolution.winner;
   const won = direction === winner;
   if (size === null) {
     if (!won) {
-      // Losing side pays zero regardless of size uncertainty once we know they lost.
       return {
         ok: true,
         outcome: winner,
         payout: 0,
-        pnl: -input.stake,
+        pnl: -stakeUsed,
         won: false,
+        stakeUsed,
       };
     }
     return {
@@ -201,8 +202,9 @@ export function computeBinarySettlementPnl(input: {
     ok: true,
     outcome: winner,
     payout,
-    pnl: payout - input.stake,
+    pnl: payout - stakeUsed,
     won,
+    stakeUsed,
   };
 }
 

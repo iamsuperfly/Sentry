@@ -3,7 +3,6 @@
  */
 
 import {
-  formatExecutionModeLabel,
   formatTradeExecutionMessage,
   formatUserFacingTradeFailure,
 } from "./telegram-trade-format.ts";
@@ -24,6 +23,7 @@ export function formatMultiTradeReply(input: {
   executionMode: string;
   explorerTxBaseUrl: string;
 }): string {
+  void input.executionMode;
   const attempts =
     input.trades.length > 0
       ? input.trades
@@ -52,50 +52,41 @@ export function formatMultiTradeReply(input: {
   for (let i = 0; i < attempts.length; i++) {
     const a = attempts[i]!;
     const exec = a.execution;
+    const failed = !a.ok || (exec && !exec.ok);
+    if (failed) {
+      tradeBlocks.push(
+        formatUserFacingTradeFailure({
+          code: a.code ?? (exec && !exec.ok ? exec.code : "execution_failed"),
+          reason:
+            a.reasonDetail ??
+            (exec && !exec.ok ? exec.reason : "Trade was not submitted."),
+        }),
+      );
+      continue;
+    }
     const decisionMeta = (a.decision ?? input.fallback.decision) as {
       tradingStart?: string;
       intervalSec?: string | null;
       expiry?: string;
     };
-    const status = exec
-      ? exec.ok
-        ? String(exec.status)
-        : "not submitted"
-      : a.ok
-        ? "ok"
-        : "not submitted";
-    const tradeMsg = formatTradeExecutionMessage({
-      tradeId: a.tradeId ?? "(none)",
-      symbol: a.intentSymbol ?? a.asset,
-      direction: String(a.direction ?? "n/a"),
-      status,
-      stake: a.stake,
-      limitPrice: a.limitPriceHint,
-      transactionHash: exec && exec.ok ? (exec.transactionHash ?? null) : null,
-      tradingStart: decisionMeta.tradingStart,
-      marketExpiry: a.decision?.expiry ?? input.fallback.decision.expiry,
-      intervalSec: decisionMeta.intervalSec,
-      explorerTxBaseUrl: input.explorerTxBaseUrl,
-    });
-    let block = `${i + 1}. ${tradeMsg}`;
-    if (!a.ok || (exec && !exec.ok)) {
-      const human = formatUserFacingTradeFailure({
-        code: a.code ?? (exec && !exec.ok ? exec.code : "execution_failed"),
-        reason:
-          a.reasonDetail ??
-          (exec && !exec.ok ? exec.reason : "Trade was not submitted."),
-      });
-      block += `\n${human}`;
-    }
-    tradeBlocks.push(block);
+    const status = exec ? String(exec.status) : "ok";
+    tradeBlocks.push(
+      formatTradeExecutionMessage({
+        tradeId: a.tradeId ?? "(none)",
+        symbol: a.intentSymbol ?? a.asset,
+        direction: String(a.direction ?? "n/a"),
+        status,
+        stake: a.stake,
+        limitPrice: a.limitPriceHint,
+        transactionHash: exec && exec.ok ? (exec.transactionHash ?? null) : null,
+        tradingStart: decisionMeta.tradingStart,
+        marketExpiry: a.decision?.expiry ?? input.fallback.decision.expiry,
+        intervalSec: decisionMeta.intervalSec,
+        explorerTxBaseUrl: input.explorerTxBaseUrl,
+      }),
+    );
   }
 
-  return [
-    `Trades: ${attempts.length}`,
-    "",
-    ...tradeBlocks,
-    "",
-    input.marketsLine,
-    `Mode: ${formatExecutionModeLabel(input.executionMode)}`,
-  ].join("\n");
+  const lines = [`Trades: ${attempts.length}`, "", ...tradeBlocks];
+  return lines.join("\n");
 }

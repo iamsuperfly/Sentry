@@ -3,6 +3,8 @@
  * Real HTTP only — no hard-coded fake AI responses.
  */
 
+import { prepareGroqMarkets } from "./groq-prompt.ts";
+
 export type AiMarketInput = {
   marketId: string;
   asset: string;
@@ -25,7 +27,6 @@ export type AiMarketInput = {
   tradeCount?: number | null;
 };
 
-/** @deprecated Prefer AiMarketInput — kept for gemini-path compatibility aliases. */
 export type GeminiMarketInput = AiMarketInput;
 
 export type AiCandidateDecision = {
@@ -81,21 +82,6 @@ export function isGroqConfigured(env: {
   return Boolean(env.apiKey && env.apiKey.trim().length > 0);
 }
 
-function buildPrompt(markets: AiMarketInput[], availableSlots: number): string {
-  return [
-    "You are a binary event-contract trading analyst for BTC/ETH up/down markets.",
-    "Use ONLY the market data provided. Do not invent prices, markets, or liquidity.",
-    `You may propose at most ${availableSlots} ENTER decisions (available position slots).`,
-    "Prefer SKIP when edge/liquidity/time is unclear. stake may be null to use user default.",
-    "Return JSON matching the schema: { decisions: [{ marketId, direction UP|DOWN, confidence 0-1, reason, stake number|null }] }.",
-    "Empty decisions array means no trade.",
-    "",
-    "Markets:",
-    JSON.stringify(markets, null, 0),
-  ].join("\n");
-}
-
-/** JSON Schema for Groq structured outputs (strict-friendly). */
 const DECISIONS_JSON_SCHEMA = {
   type: "object",
   properties: {
@@ -177,21 +163,27 @@ export async function callGroqMarketDecisions(input: {
   model: string;
   markets: AiMarketInput[];
   availableSlots: number;
+  maxMarkets?: number;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 }): Promise<AiCallResult> {
+  const prepared = prepareGroqMarkets(
+    input.markets,
+    input.availableSlots,
+    input.maxMarkets,
+  );
   const model = input.model.trim() || DEFAULT_GROQ_MODEL;
   const baseUrl = (input.baseUrl ?? DEFAULT_GROQ_BASE_URL).replace(/\/$/, "");
   const started = Date.now();
   const startedAt = new Date(started).toISOString();
-  const hash = snapshotHash(input.markets);
+  const hash = snapshotHash(prepared.selected);
   const baseAudit: Omit<AiAuditRecord, "latencyMs" | "ok" | "decisionsReturned"> =
     {
       provider: "groq",
       model,
       startedAt,
-      marketsSupplied: input.markets.length,
+      marketsSupplied: prepared.selected.length,
       snapshotHash: hash,
     };
 
@@ -218,7 +210,7 @@ export async function callGroqMarketDecisions(input: {
     messages: [
       {
         role: "user",
-        content: buildPrompt(input.markets, input.availableSlots),
+        content: prepared.prompt,
       },
     ],
     response_format: {
@@ -235,7 +227,9 @@ export async function callGroqMarketDecisions(input: {
     {
       provider: "groq",
       model,
-      marketsSupplied: input.markets.length,
+      marketsSupplied: prepared.selected.length,
+      marketsRankedFrom: input.markets.length,
+      groqCap: prepared.cap,
       snapshotHash: hash,
       availableSlots: input.availableSlots,
     },
@@ -295,10 +289,6 @@ export async function callGroqMarketDecisions(input: {
     try {
       parsedJson = JSON.parse(text);
     } catch {
-      console.warn(
-        { provider: "groq", model, latencyMs },
-        "AI response was not JSON",
-      );
       return {
         ok: false,
         code: "ai_invalid_response",
@@ -376,7 +366,7 @@ export async function callGroqMarketDecisions(input: {
         provider: "groq",
         model,
         latencyMs,
-        marketsSupplied: input.markets.length,
+        marketsSupplied: prepared.selected.length,
         decisionsReturned: decisions.length,
         snapshotHash: hash,
       },

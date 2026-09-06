@@ -18,6 +18,7 @@ export type PnlBackfillTrade = {
   stake: number;
   filledContracts: number | null;
   contracts: number | null;
+  limitPrice?: number | null;
   outcome: string | null;
   pnl: number | null;
 };
@@ -67,6 +68,7 @@ export function planPnlBackfill(
     stake: trade.stake,
     filledContracts: trade.filledContracts,
     contracts: trade.contracts,
+    limitPrice: trade.limitPrice ?? null,
     resolution,
   });
 

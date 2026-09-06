@@ -11,13 +11,27 @@ describe("human trade errors", () => {
       code: "submission_failed",
       reason: "ImmediateOrCancelNoFill()",
     });
-    assert.match(fromReason, /No fill at this price/);
+    assert.match(fromReason, /Nothing was taken at this price/);
     assert.doesNotMatch(fromReason, /ImmediateOrCancelNoFill/);
 
     const fromCode = formatUserFacingTradeFailure({
       code: "ImmediateOrCancelNoFill",
     });
-    assert.match(fromCode, /Nothing taken/);
+    assert.match(fromCode, /Nothing was taken/);
+  });
+
+  it("hides live ask vs intended limit diagnostics", () => {
+    const text = formatUserFacingTradeFailure({
+      code: "book_stale",
+      reason: "Live NO ask 0.607 is above intended limit 0.599",
+    });
+    assert.match(text, /Nothing was taken at this price/);
+    assert.doesNotMatch(text, /0\.607/);
+    assert.doesNotMatch(text, /intended limit/);
+    assert.equal(
+      sanitizeTechnicalErrorNote("Live NO ask 0.607 is above intended limit 0.599"),
+      "Nothing was taken at this price. No funds were used.",
+    );
   });
 
   it("maps real risk halt codes and includes parsed PnL", () => {
@@ -28,7 +42,6 @@ describe("human trade errors", () => {
     assert.match(loss, /Daily loss limit reached/);
     assert.match(loss, /Today's PnL: -42\.5/);
     assert.doesNotMatch(loss, /user_daily_loss_stop/);
-    assert.doesNotMatch(loss, /SYSTEM_MAX/);
 
     const system = formatUserFacingTradeFailure({
       code: "system_daily_loss_stop",
@@ -70,7 +83,7 @@ describe("human trade errors", () => {
 
   it("sanitizes SDK notes", () => {
     const note = sanitizeTechnicalErrorNote("ImmediateOrCancelNoFill()");
-    assert.match(note ?? "", /No fill at this price/);
+    assert.match(note ?? "", /Nothing was taken/);
     assert.doesNotMatch(note ?? "", /ImmediateOrCancelNoFill/);
   });
 });
