@@ -24,6 +24,10 @@ export type AiMarketInput = {
   noAsk: number | null;
   spread: number | null;
   topAskQuantity: number | null;
+  yesAskQuantity?: number | null;
+  noAskQuantity?: number | null;
+  spot?: number;
+  gapBps?: number;
   tradeCount?: number | null;
 };
 

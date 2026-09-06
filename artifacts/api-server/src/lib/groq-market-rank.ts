@@ -9,7 +9,11 @@ export type GroqRankMarket = {
   noAsk: number | null;
   spread: number | null;
   topAskQuantity: number | null;
+  yesAskQuantity?: number | null;
+  noAskQuantity?: number | null;
   strike?: string;
+  spot?: number;
+  gapBps?: number;
 };
 
 export const DEFAULT_GROQ_MARKET_CAP = 8;
@@ -90,6 +94,17 @@ export function compactAiMarket(m: GroqRankMarket): Record<string, unknown> {
     spr: m.spread,
   };
   if (m.topAskQuantity !== null) row.qty = m.topAskQuantity;
-  if (m.strike) row.k = m.strike;
+  if (m.strike) row.strike = m.strike;
+  if (m.spot !== undefined && Number.isFinite(m.spot)) row.spot = m.spot;
+  if (m.gapBps !== undefined && Number.isFinite(m.gapBps)) row.gapBps = m.gapBps;
+  if (
+    (m.yesAskQuantity !== undefined && m.yesAskQuantity !== null) ||
+    (m.noAskQuantity !== undefined && m.noAskQuantity !== null)
+  ) {
+    row.depth = {
+      yes: m.yesAskQuantity ?? null,
+      no: m.noAskQuantity ?? null,
+    };
+  }
   return row;
 }
