@@ -1,15 +1,15 @@
-import type { AiMarketInput } from "./groq-client.ts";
 import {
   compactAiMarket,
   rankMarketsForGroq,
   resolveGroqMarketCap,
+  type GroqRankMarket,
 } from "./groq-market-rank.ts";
 
-export function prepareGroqMarkets(
-  markets: AiMarketInput[],
+export function prepareGroqMarkets<T extends GroqRankMarket>(
+  markets: T[],
   availableSlots: number,
   maxMarkets?: number | string | null,
-): { selected: AiMarketInput[]; prompt: string; cap: number } {
+): { selected: T[]; prompt: string; cap: number } {
   const cap = resolveGroqMarketCap(maxMarkets ?? process.env.GROQ_MAX_MARKETS);
   const selected = rankMarketsForGroq(markets, cap);
   const prompt = [
