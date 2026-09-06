@@ -12,6 +12,7 @@ import type { Address, Hex } from "viem";
 import type { AppConfig } from "../config.ts";
 import type { MarketLifecycleView } from "./position-lifecycle.ts";
 import type { DreamdexBook } from "./dreamdex.ts";
+import { closeExchange } from "./exchange-lifecycle.ts";
 
 export function exchangeFromConfig(config: AppConfig): SomniaMarkets {
   return new SomniaMarkets({
@@ -54,10 +55,7 @@ export async function readResolvedMarketOnchain(
   } catch {
     return null;
   } finally {
-    await Promise.race([
-      exchange.close(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-    ]);
+    await closeExchange(exchange, { chainTouched: true });
   }
 }
 
@@ -84,10 +82,7 @@ export async function readFreshBinaryBook(
       noAsks: levels(book.noAsks),
     };
   } finally {
-    await Promise.race([
-      exchange.close(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-    ]);
+    await closeExchange(exchange, { chainTouched: true });
   }
 }
 
