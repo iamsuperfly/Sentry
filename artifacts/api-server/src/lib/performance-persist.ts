@@ -11,16 +11,19 @@ import {
   getZonedDayBounds,
 } from "./user-timezone.ts";
 
+const ALL_TIME_ROW_CAP = 10_000;
+
 export async function loadPerformanceTrades(
   config: AppConfig,
   userId: string,
-  limit = 500,
+  limit = ALL_TIME_ROW_CAP,
 ): Promise<PerformanceTrade[]> {
   const { data, error } = await getSupabaseClient(config)
     .from("trades")
     .select("status, pnl_usdso, stake_usdso, outcome, settled_at")
     .eq("user_id", userId)
-    .order("created_at", { ascending: false })
+    .in("status", ["settled", "redeemed", "cancelled", "failed"])
+    .order("settled_at", { ascending: false, nullsFirst: false })
     .limit(limit);
   if (error) throw new Error("Unable to load performance trades.");
   return (data ?? []).map((row) => {

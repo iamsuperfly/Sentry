@@ -1,8 +1,5 @@
 /**
  * Stage 8 — market-resolve finalization for open trades + one-shot Telegram notice claim.
- *
- * Does not place orders. Integrates with existing Stage 6 terminal statuses.
- * PnL/outcome are persisted only when protocol resolution evidence is present.
  */
 
 import type { AppConfig } from "../config.ts";
@@ -27,6 +24,7 @@ export type FinalizeTradeRow = {
   symbol: string;
   direction: string;
   stake: number;
+  limitPrice: number | null;
   transactionHash: string | null;
   filledContracts: number | null;
   contracts: number | null;
@@ -79,6 +77,7 @@ function mapFinalizeRow(row: Record<string, unknown>): FinalizeTradeRow {
     symbol: String(row.symbol ?? ""),
     direction: String(row.direction ?? ""),
     stake: Number(row.stake_usdso ?? 0),
+    limitPrice: num(row.limit_price),
     transactionHash: (row.transaction_hash as string | null) ?? null,
     filledContracts: num(row.filled_contracts),
     contracts: num(row.contracts),
@@ -94,7 +93,7 @@ function mapFinalizeRow(row: Record<string, unknown>): FinalizeTradeRow {
 }
 
 const SELECT =
-  "id, user_id, status, market_id, symbol, direction, stake_usdso, transaction_hash, filled_contracts, contracts, error_message, outcome, pnl_usdso, decision, finalization_notified_at, telegram_users(telegram_user_id)";
+  "id, user_id, status, market_id, symbol, direction, stake_usdso, limit_price, transaction_hash, filled_contracts, contracts, error_message, outcome, pnl_usdso, decision, finalization_notified_at, telegram_users(telegram_user_id)";
 
 export async function listOpenTradesForFinalization(
   config: AppConfig,
@@ -112,14 +111,10 @@ export async function listOpenTradesForFinalization(
   return (data ?? []).map((row) => mapFinalizeRow(row as Record<string, unknown>));
 }
 
-/**
- * Compute outcome/pnl from protocol resolution when available.
- * Returns null fields when evidence is insufficient — does not invent winners.
- */
 export function settlementFieldsFromMarket(
   trade: Pick<
     FinalizeTradeRow,
-    "direction" | "stake" | "filledContracts" | "contracts"
+    "direction" | "stake" | "filledContracts" | "contracts" | "limitPrice"
   >,
   market: MarketLifecycleView | null,
 ): { outcome: string | null; pnl: number | null; reason?: string } {
@@ -135,12 +130,9 @@ export function settlementFieldsFromMarket(
     onchainStatus: market.onchainStatus,
     finalized: market.finalized,
     indexerStatus: market.indexerStatus,
-    winningOutcome: market.isVoided
-      ? undefined
-      : market.winningOutcome,
+    winningOutcome: market.isVoided ? undefined : market.winningOutcome,
   });
 
-  // Void via explicit flag even if status enum not yet 5.
   const effective =
     market.isVoided === true
       ? ({ kind: "voided" } as const)
@@ -159,6 +151,7 @@ export function settlementFieldsFromMarket(
     stake: trade.stake,
     filledContracts: trade.filledContracts,
     contracts: trade.contracts,
+    limitPrice: trade.limitPrice,
     resolution: effective,
   });
 
@@ -250,10 +243,6 @@ export async function applyMarketResolveFinalization(
   };
 }
 
-/**
- * Claim the right to send a finalization Telegram notice exactly once.
- * Returns true only for the winner of the conditional update.
- */
 export async function claimFinalizationNotification(
   config: AppConfig,
   input: { tradeId: string; userId: string },

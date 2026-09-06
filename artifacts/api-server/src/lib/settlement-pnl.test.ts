@@ -88,6 +88,22 @@ describe("computeBinarySettlementPnl", () => {
     }
   });
 
+  it("partial fill loss uses filled*limit as cost, not requested stake", () => {
+    const r = computeBinarySettlementPnl({
+      direction: "up",
+      stake: 28,
+      filledContracts: 10,
+      contracts: 40,
+      limitPrice: 0.7,
+      resolution: { kind: "resolved", winner: "down" },
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.stakeUsed, 7);
+      assert.equal(r.pnl, -7);
+    }
+  });
+
   it("refuses win without contract size", () => {
     const r = computeBinarySettlementPnl({
       direction: "up",

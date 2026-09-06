@@ -10,7 +10,7 @@ import { getLeaderboardMessage } from "../lib/leaderboard-persist";
 import { decryptPrivateKey } from "../lib/wallet-crypto";
 import {
   helpKeyboard,
-  privateKeyHideKeyboard,
+  privateKeyRevealKeyboard,
   privateKeyWarnKeyboard,
 } from "./ui-keyboards";
 
@@ -52,6 +52,17 @@ export async function warnPrivateKey(ctx: Context) {
   );
 }
 
+export function buildPrivateKeyRevealText(key: string): string {
+  return [
+    "Your private key",
+    "",
+    `<code>${key}</code>`,
+    "",
+    "Use COPY KEY, or tap and hold the key to copy.",
+    "This message deletes in 60 seconds.",
+  ].join("\n");
+}
+
 export async function revealPrivateKey(ctx: Context, config: AppConfig) {
   const wallet = await findWallet(config, ctx.from!.id);
   if (!wallet) {
@@ -61,20 +72,11 @@ export async function revealPrivateKey(ctx: Context, config: AppConfig) {
     return;
   }
   const key = decryptPrivateKey(config, wallet.encrypted_private_key);
-  const sent = await ctx.reply(
-    [
-      "Your private key",
-      "",
-      `<code>${key}</code>`,
-      "",
-      "Tap the key to copy it. This message deletes in 60 seconds.",
-    ].join("\n"),
-    {
-      parse_mode: "HTML",
-      protect_content: true,
-      reply_markup: privateKeyHideKeyboard(),
-    },
-  );
+  const sent = await ctx.reply(buildPrivateKeyRevealText(key), {
+    parse_mode: "HTML",
+    protect_content: true,
+    reply_markup: privateKeyRevealKeyboard(key),
+  });
   setTimeout(() => {
     ctx.api.deleteMessage(sent.chat.id, sent.message_id).catch(() => undefined);
   }, 60_000);
