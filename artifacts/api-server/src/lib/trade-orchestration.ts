@@ -7,6 +7,7 @@
 
 import type { AppConfig } from "../config.ts";
 import type { DreamdexDiagnostic } from "./dreamdex.ts";
+import type { SpotPriceResult } from "./binance-spot.ts";
 import { attachMarketWindowMeta } from "./decision-market-meta.ts";
 import type { LiveSubmitResult } from "./live-execution.ts";
 import type { StrategyDecision, StrategyRunResult } from "./strategy.ts";
@@ -15,6 +16,14 @@ import {
   callGroqMarketDecisions,
   isGroqConfigured,
 } from "./groq-client.ts";
+import {
+  enrichGroqMarketWithSpot,
+  fetchGroqSpotQuotes as fetchBinanceGroqSpotQuotes,
+} from "./groq-market-context.ts";
+import {
+  rankMarketsForGroq,
+  resolveGroqMarketCap,
+} from "./groq-market-rank.ts";
 import { validateAiCandidates } from "./ai-decision-validate.ts";
 import {
   marketEligibleForGemini,
@@ -68,6 +77,9 @@ export type TradeOrchestrationDeps = {
     identity: TelegramIdentity;
     markets: DreamdexDiagnostic["markets"];
   }) => Promise<string[]>;
+  fetchGroqSpotQuotes?: (
+    markets: Array<{ asset: string }>,
+  ) => Promise<ReadonlyMap<string, SpotPriceResult>>;
   persistIntent: (input: {
     config: AppConfig;
     identity: TelegramIdentity;
@@ -221,6 +233,8 @@ export async function runTelegramTradeCycle(input: {
     expireStalePending:
       provided.expireStalePending ?? defaults?.expireStalePending,
   };
+  const fetchSpotQuotes =
+    provided.fetchGroqSpotQuotes ?? fetchBinanceGroqSpotQuotes;
   const useInjectedStrategy = Boolean(provided.evaluate);
 
   let snapshot: DreamdexDiagnostic;
@@ -413,13 +427,56 @@ export async function runTelegramTradeCycle(input: {
         };
       }
 
-      const aiInputs = aiEligible.map((m) => toGeminiMarketInput(m, nowSec));
+      const baseAiInputs = aiEligible.map((m) => toGeminiMarketInput(m, nowSec));
+      const groqCap = resolveGroqMarketCap(process.env.GROQ_MAX_MARKETS);
+      const contextMarkets = rankMarketsForGroq(baseAiInputs, groqCap);
+      let spotQuotes: ReadonlyMap<string, SpotPriceResult> = new Map();
+      try {
+        // 1m markets are excluded by marketEligibleForGemini, so this context
+        // fetch never duplicates the dedicated 1m Binance path.
+        spotQuotes = await fetchSpotQuotes(contextMarkets);
+      } catch (error) {
+        logger.warn(
+          {
+            err:
+              error instanceof Error
+                ? error.message.slice(0, 160)
+                : "spot context failed",
+          },
+          "Groq Binance context unavailable",
+        );
+      }
+      const aiInputs = baseAiInputs.map((market) =>
+        enrichGroqMarketWithSpot(
+          market,
+          spotQuotes.get(market.asset.trim().toUpperCase()),
+        ),
+      );
+      const contextAiInputs = aiInputs.filter(
+        (market) => market.spot !== undefined && market.gapBps !== undefined,
+      );
+      if (contextAiInputs.length === 0) {
+        return {
+          ok: false,
+          code: "no_enter_decision",
+          reason:
+            "No AI markets have both live Binance spot context and a valid DreamDEX strike.",
+          marketScan,
+        };
+      }
+      const contextMarketIds = new Set(
+        contextAiInputs.map((market) => market.marketId),
+      );
+      const contextEligibleMarkets = aiEligible.filter((market) =>
+        contextMarketIds.has(market.marketId),
+      );
       const aiResult = await callGroqMarketDecisions({
         apiKey: input.config.groqApiKey!,
         model: input.config.groqModel,
         baseUrl: input.config.groqBaseUrl,
-        markets: aiInputs,
+        markets: contextAiInputs,
         availableSlots,
+        maxMarkets: groqCap,
       });
 
       if (!aiResult.ok) {
@@ -459,7 +516,7 @@ export async function runTelegramTradeCycle(input: {
           stake: d.stake,
         })),
         {
-          markets: aiEligible.map((m) => {
+          markets: contextEligibleMarkets.map((m) => {
             const book = extractBookTop(m);
             return {
               marketId: m.marketId,
@@ -584,7 +641,7 @@ export async function runTelegramTradeCycle(input: {
         liveExecutionRequested: input.liveExecutionRequested === true,
         defaultStake,
         selectedCandidates,
-        markets: aiEligible,
+        markets: contextEligibleMarkets,
         nowSec,
         persistIntent: deps.persistIntent,
         executePersisted: deps.executePersisted,

@@ -13,6 +13,18 @@ import {
 } from "./strategy.ts";
 import type { DreamdexMarketDiagnostic } from "./dreamdex.ts";
 
+function levelQuantity(
+  levels: Array<{ quantity: string }> | undefined,
+  decimals: number,
+): number | null {
+  const raw = levels?.[0]?.quantity;
+  if (raw === undefined) return null;
+  const scale = 10 ** decimals;
+  if (!Number.isFinite(scale) || scale <= 0) return null;
+  const value = Number(raw) / scale;
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
 export const GEMINI_STRATEGY_NAME = "gemini-v1";
 export const GEMINI_STRATEGY_VERSION = "1.0.0";
 
@@ -65,6 +77,12 @@ export function toGeminiMarketInput(
     book.yesBid !== null && book.yesAsk !== null
       ? book.yesAsk - book.yesBid
       : null;
+  const yesAskQuantity = levelQuantity(market.book.yesAsks, market.decimals);
+  const noAskQuantity = levelQuantity(market.book.noAsks, market.decimals);
+  const topAskQuantity = Math.max(
+    yesAskQuantity ?? 0,
+    noAskQuantity ?? 0,
+  );
   return {
     marketId: market.marketId,
     asset: market.asset,
@@ -83,7 +101,9 @@ export function toGeminiMarketInput(
     noBid: book.noBid,
     noAsk: book.noAsk,
     spread,
-    topAskQuantity: null,
+    topAskQuantity: topAskQuantity > 0 ? topAskQuantity : null,
+    yesAskQuantity,
+    noAskQuantity,
   };
 }
 
