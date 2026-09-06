@@ -17,7 +17,7 @@ export async function listSettledTradesMissingPnl(
   let query = getSupabaseClient(config)
     .from("trades")
     .select(
-      "id, user_id, status, direction, stake_usdso, filled_contracts, contracts, outcome, pnl_usdso, market_id",
+      "id, user_id, status, direction, stake_usdso, filled_contracts, contracts, limit_price, outcome, pnl_usdso, market_id",
     )
     .in("status", ["settled", "redeemed"])
     .is("pnl_usdso", null)
@@ -41,6 +41,7 @@ export async function listSettledTradesMissingPnl(
       stake: Number(r.stake_usdso ?? 0),
       filledContracts: num(r.filled_contracts),
       contracts: num(r.contracts),
+      limitPrice: num(r.limit_price),
       outcome: (r.outcome as string | null) ?? null,
       pnl: num(r.pnl_usdso),
       marketId: String(r.market_id ?? ""),
