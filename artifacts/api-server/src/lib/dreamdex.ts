@@ -8,6 +8,7 @@ import {
 import { somniaShannon } from "@somnia-chain/markets-sdk/chains";
 import type { Hex } from "viem";
 import type { AppConfig } from "../config";
+import { closeExchange } from "./exchange-lifecycle";
 
 const SHANNON_CHAIN_ID = 50312;
 const ONCHAIN_TRADING_STATUS = 1;
@@ -149,6 +150,7 @@ export async function readDreamdexMarkets(
     wsRpcUrl: config.wsRpcUrl,
     addresses: SOMNIA_TESTNET_ADDRESSES,
   });
+  let chainTouched = false;
 
   try {
     const requestedAsset = asset?.trim().toUpperCase();
@@ -192,6 +194,7 @@ export async function readDreamdexMarkets(
 
     const diagnostics = await Promise.all(
       selectedMarkets.map(async (market) => {
+        chainTouched = true;
         const onchain = await exchange.client.getMarketOnchain(
           market.marketId as Hex,
         );
@@ -217,9 +220,6 @@ export async function readDreamdexMarkets(
       listingApi,
     };
   } finally {
-    await Promise.race([
-      exchange.close(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-    ]);
+    await closeExchange(exchange, { chainTouched });
   }
 }
