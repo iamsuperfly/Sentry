@@ -1,9 +1,16 @@
-/**
- * Cheap local ranking before Groq.
- * Uses only fields already on the AI market snapshot.
- */
+/** Cheap local ranking before Groq. Uses snapshot fields already collected. */
 
-import type { AiMarketInput } from "./groq-client.ts";
+export type GroqRankMarket = {
+  marketId: string;
+  asset: string;
+  durationBucket: string;
+  secondsToExpiry: number | null;
+  yesAsk: number | null;
+  noAsk: number | null;
+  spread: number | null;
+  topAskQuantity: number | null;
+  strike?: string;
+};
 
 export const DEFAULT_GROQ_MARKET_CAP = 8;
 
@@ -13,7 +20,7 @@ export function resolveGroqMarketCap(raw?: string | number | null): number {
   return Math.min(24, Math.floor(n));
 }
 
-function midAsk(m: AiMarketInput): number | null {
+function midAsk(m: GroqRankMarket): number | null {
   const asks = [m.yesAsk, m.noAsk].filter(
     (v): v is number => v !== null && Number.isFinite(v) && v > 0 && v < 1,
   );
@@ -21,11 +28,10 @@ function midAsk(m: AiMarketInput): number | null {
   return Math.min(...asks);
 }
 
-export function scoreMarketForGroq(m: AiMarketInput): number {
+export function scoreMarketForGroq(m: GroqRankMarket): number {
   let score = 0;
   const ask = midAsk(m);
   if (ask === null) return -1000;
-  // Prefer asks that are not extremely expensive (little payout) or junk.
   if (ask >= 0.35 && ask <= 0.72) score += 30;
   else if (ask >= 0.25 && ask <= 0.8) score += 16;
   else score += 4;
@@ -62,10 +68,10 @@ export function scoreMarketForGroq(m: AiMarketInput): number {
   return score;
 }
 
-export function rankMarketsForGroq(
-  markets: AiMarketInput[],
+export function rankMarketsForGroq<T extends GroqRankMarket>(
+  markets: T[],
   cap = DEFAULT_GROQ_MARKET_CAP,
-): AiMarketInput[] {
+): T[] {
   const limit = resolveGroqMarketCap(cap);
   return [...markets]
     .filter((m) => midAsk(m) !== null)
@@ -73,8 +79,7 @@ export function rankMarketsForGroq(
     .slice(0, limit);
 }
 
-/** Compact payload: drop fields Groq cannot use after local eligibility. */
-export function compactAiMarket(m: AiMarketInput): Record<string, unknown> {
+export function compactAiMarket(m: GroqRankMarket): Record<string, unknown> {
   const row: Record<string, unknown> = {
     id: m.marketId,
     a: m.asset,
