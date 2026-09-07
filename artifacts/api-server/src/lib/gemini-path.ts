@@ -12,6 +12,7 @@ import {
   type BookTop,
 } from "./strategy.ts";
 import type { DreamdexMarketDiagnostic } from "./dreamdex.ts";
+import { referencePriceForMarket } from "./reference-price.ts";
 
 function levelQuantity(
   levels: Array<{ quantity: string }> | undefined,
@@ -34,7 +35,6 @@ export const FIVE_MIN_AI_WINDOW_SEC = 120;
 export const GEMINI_DURATION_BUCKETS = new Set([
   "5m",
   "15m",
-  "30m",
   "1h",
   "4h",
   "1d",
@@ -55,6 +55,7 @@ export function marketEligibleForGemini(
     expiry: market.expiry,
   });
   if (!isGeminiDurationBucket(bucket)) return false;
+  if (referencePriceForMarket(market) === null) return false;
   const left = secondsToExpiry(market.expiry, nowSec);
   if (left === null || left <= 60) return false;
   if (bucket === "5m" && left > FIVE_MIN_AI_WINDOW_SEC) return false;
@@ -93,6 +94,11 @@ export function toGeminiMarketInput(
     windowSec: classified.windowSec,
     tradingStart: market.tradingStart,
     expiry: market.expiry,
+    referenceType:
+      market.referenceType ??
+      (market.strike === "0" ? undefined : "strike"),
+    referencePrice: referencePriceForMarket(market) ?? undefined,
+    referenceDecimals: market.referenceDecimals,
     secondsToExpiry: left,
     tradable: market.tradable,
     finalized: market.finalized,

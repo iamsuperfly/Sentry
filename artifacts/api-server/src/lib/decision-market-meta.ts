@@ -1,6 +1,6 @@
 /**
  * Attach market window metadata from DreamDEX diagnostics onto a strategy decision
- * before persistence so Telegram can show real timeframes (5m / 30m / 1h).
+ * before persistence so Telegram can show real timeframes (5m / 1h).
  *
  * Source of truth (in priority order):
  * 1. BinaryMarket.intervalSec when present (SDK-derived window length)

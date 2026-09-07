@@ -460,7 +460,7 @@ export async function runTelegramTradeCycle(input: {
           ok: false,
           code: "no_enter_decision",
           reason:
-            "No AI markets have both live Binance spot context and a valid DreamDEX strike.",
+            "No AI markets have both live Binance spot context and a valid DreamDEX reference price.",
           marketScan,
         };
       }
