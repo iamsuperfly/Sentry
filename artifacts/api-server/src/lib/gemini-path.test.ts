@@ -79,6 +79,32 @@ test("1m markets do not enter the Groq eligibility path", () => {
   );
 });
 
+test("strike-0 opening markets are eligible only after a resolved reference price", () => {
+  const now = 1_700_000_000;
+  const opening = {
+    intervalSec: "3600",
+    tradingStart: String(now - 100),
+    expiry: String(now + 3500),
+    strike: "0",
+  };
+  assert.equal(
+    marketEligibleForGemini(market({ ...opening, referencePrice: undefined }), now),
+    false,
+  );
+  assert.equal(
+    marketEligibleForGemini(
+      market({
+        ...opening,
+        referenceType: "opening",
+        referencePrice: 80346.7,
+        referenceDecimals: 2,
+      }),
+      now,
+    ),
+    true,
+  );
+});
+
 test("maps the DreamDEX strike and normalized ask depth into AI input", () => {
   const now = 1_700_000_000;
   const input = toGeminiMarketInput(
