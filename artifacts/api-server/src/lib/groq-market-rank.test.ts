@@ -123,6 +123,28 @@ test("enriches BTC and ETH markets without inventing missing strike context", ()
   assert.equal(eth.gapBps, -20);
   assert.equal(missingStrike.spot, 68100);
   assert.equal(missingStrike.gapBps, undefined);
+
+  const opening = enrichGroqMarketWithSpot(
+    m({
+      asset: "BTC",
+      strike: "0",
+      referenceType: "opening",
+      referencePrice: 80_346.7,
+      referenceDecimals: 2,
+    }),
+    {
+      ok: true,
+      quote: {
+        provider: "binance",
+        symbol: "BTCUSDT",
+        asset: "BTC",
+        price: 80_750,
+        fetchedAtMs: 1,
+      },
+    },
+  );
+  assert.equal(opening.spot, 80_750);
+  assert.equal(opening.gapBps, 50.19);
 });
 
 test("fetches one quote per unique supported asset and fails closed per asset", async () => {
