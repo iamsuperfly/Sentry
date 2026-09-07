@@ -1,15 +1,17 @@
 /**
- * AI → StrategyDecision mapping for 5m and 15m+ markets.
+ * Groq → StrategyDecision mapping for 5m and 15m+ markets.
  * Pure helpers + orchestration-facing adapters. No secrets.
+ *
+ * Historical note: this module was originally written for Gemini. The live
+ * decision provider is Groq; the mapping contract is unchanged.
  */
 
 import { classifyMarketDuration } from "./market-duration.ts";
-import type { GeminiMarketInput } from "./gemini-client.ts";
+import type { AiMarketInput } from "./groq-client.ts";
 import {
   extractBookTop,
   secondsToExpiry,
   type StrategyDecision,
-  type BookTop,
 } from "./strategy.ts";
 import type { DreamdexMarketDiagnostic } from "./dreamdex.ts";
 import { referencePriceForMarket } from "./reference-price.ts";
@@ -26,14 +28,11 @@ function levelQuantity(
   return Number.isFinite(value) && value > 0 ? value : null;
 }
 
-export const GEMINI_STRATEGY_NAME = "gemini-v1";
-export const GEMINI_STRATEGY_VERSION = "1.0.0";
+export const GROQ_STRATEGY_NAME = "groq-v1";
+export const GROQ_STRATEGY_VERSION = "1.0.0";
 
-/** @deprecated 5m markets are no longer gated to a final-120s window. */
-export const FIVE_MIN_AI_WINDOW_SEC = 120;
-
-/** Durations that use Groq/AI as the decision engine. */
-export const GEMINI_DURATION_BUCKETS = new Set([
+/** Durations that use Groq as the decision engine. */
+export const GROQ_DURATION_BUCKETS = new Set([
   "5m",
   "15m",
   "1h",
@@ -41,11 +40,11 @@ export const GEMINI_DURATION_BUCKETS = new Set([
   "1d",
 ]);
 
-export function isGeminiDurationBucket(bucket: string): boolean {
-  return GEMINI_DURATION_BUCKETS.has(bucket);
+export function isGroqDurationBucket(bucket: string): boolean {
+  return GROQ_DURATION_BUCKETS.has(bucket);
 }
 
-export function marketEligibleForGemini(
+export function marketEligibleForGroq(
   market: DreamdexMarketDiagnostic,
   nowSec: number = Math.floor(Date.now() / 1000),
 ): boolean {
@@ -55,7 +54,7 @@ export function marketEligibleForGemini(
     tradingStart: market.tradingStart,
     expiry: market.expiry,
   });
-  if (!isGeminiDurationBucket(bucket)) return false;
+  if (!isGroqDurationBucket(bucket)) return false;
   if (referencePriceForMarket(market) === null) return false;
   const left = secondsToExpiry(market.expiry, nowSec);
   if (left === null || left <= 0) return false;
@@ -64,10 +63,10 @@ export function marketEligibleForGemini(
   return book.yesAsk !== null || book.noAsk !== null;
 }
 
-export function toGeminiMarketInput(
+export function toGroqMarketInput(
   market: DreamdexMarketDiagnostic,
   nowSec: number = Math.floor(Date.now() / 1000),
-): GeminiMarketInput {
+): AiMarketInput {
   const classified = classifyMarketDuration({
     intervalSec: market.intervalSec,
     tradingStart: market.tradingStart,
@@ -114,7 +113,7 @@ export function toGeminiMarketInput(
   };
 }
 
-export function geminiCandidateToStrategyDecision(input: {
+export function groqCandidateToStrategyDecision(input: {
   candidate: {
     marketId: string;
     direction: "UP" | "DOWN";
@@ -135,8 +134,8 @@ export function geminiCandidateToStrategyDecision(input: {
   }
   const left = secondsToExpiry(market.expiry, nowSec);
   return {
-    strategyName: GEMINI_STRATEGY_NAME,
-    strategyVersion: GEMINI_STRATEGY_VERSION,
+    strategyName: GROQ_STRATEGY_NAME,
+    strategyVersion: GROQ_STRATEGY_VERSION,
     action: "enter",
     marketId: market.marketId,
     asset: market.asset,
@@ -155,14 +154,10 @@ export function geminiCandidateToStrategyDecision(input: {
     finalized: market.finalized,
     indexerStatus: String(market.indexerStatus),
     onchainStatus: market.onchainStatus,
-    reason: `gemini confidence=${input.candidate.confidence}: ${input.candidate.reason}`.slice(
+    reason: `groq confidence=${input.candidate.confidence}: ${input.candidate.reason}`.slice(
       0,
       500,
     ),
     skipCode: null,
   };
-}
-
-export function emptyBookTop(): BookTop {
-  return { yesBid: null, yesAsk: null, noBid: null, noAsk: null };
 }

@@ -34,8 +34,6 @@ export type AiMarketInput = {
   tradeCount?: number | null;
 };
 
-export type GeminiMarketInput = AiMarketInput;
-
 export type AiCandidateDecision = {
   marketId: string;
   direction: "UP" | "DOWN";

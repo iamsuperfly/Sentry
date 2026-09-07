@@ -1,7 +1,7 @@
 /**
  * Production execution wiring (Stage 6 entry boundary).
  *
- * Production: 1m (Binance spot ±0.05%) then 15m+ Groq → validate → risk → persist → execute.
+ * Production: 1m (Binance spot ±0.05%) then 5m/15m+ Groq → validate → risk → persist → execute.
  * Unit tests may inject `evaluate` for the legacy edge-taker path.
  */
 
@@ -26,9 +26,9 @@ import {
 } from "./groq-market-rank.ts";
 import { validateAiCandidates } from "./ai-decision-validate.ts";
 import {
-  marketEligibleForGemini,
-  toGeminiMarketInput,
-} from "./gemini-path.ts";
+  marketEligibleForGroq,
+  toGroqMarketInput,
+} from "./groq-path.ts";
 import { extractBookTop, secondsToExpiry } from "./strategy.ts";
 import { logger } from "./logger.ts";
 import {
@@ -374,7 +374,7 @@ export async function runTelegramTradeCycle(input: {
 
     if (!oneMinSelected) {
       const aiEligible = snapshot.markets.filter((m) =>
-        marketEligibleForGemini(m, nowSec),
+        marketEligibleForGroq(m, nowSec),
       );
       const groqConfigured = isGroqConfigured({
         apiKey: input.config.groqApiKey,
@@ -396,7 +396,7 @@ export async function runTelegramTradeCycle(input: {
           ok: false,
           code: "no_enter_decision",
           reason:
-            "No 15m+ tradable markets with usable asks in this scan for AI.",
+            "No eligible 5m/15m+ tradable markets with usable asks in this scan.",
           marketScan,
         };
       }
@@ -427,12 +427,12 @@ export async function runTelegramTradeCycle(input: {
         };
       }
 
-      const baseAiInputs = aiEligible.map((m) => toGeminiMarketInput(m, nowSec));
+      const baseAiInputs = aiEligible.map((m) => toGroqMarketInput(m, nowSec));
       const groqCap = resolveGroqMarketCap(process.env.GROQ_MAX_MARKETS);
       const contextMarkets = rankMarketsForGroq(baseAiInputs, groqCap);
       let spotQuotes: ReadonlyMap<string, SpotPriceResult> = new Map();
       try {
-        // 1m markets are excluded by marketEligibleForGemini, so this context
+        // 1m markets are excluded by marketEligibleForGroq, so this context
         // fetch never duplicates the dedicated 1m Binance path.
         spotQuotes = await fetchSpotQuotes(contextMarkets);
       } catch (error) {

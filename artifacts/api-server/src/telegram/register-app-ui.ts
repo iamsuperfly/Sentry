@@ -219,7 +219,7 @@ export async function startAppOnboarding(ctx: Context, config: AppConfig) {
   setConversation(ctx.from.id, { kind: "onboard_faucet", returning });
   await ctx.reply(
     [
-      "DreamEventBot trades BTC and ETH event contracts on Somnia testnet.",
+      "Sentry trades BTC and ETH event contracts on Somnia testnet.",
       "",
       "Setup takes less than 2 minutes.",
       "",

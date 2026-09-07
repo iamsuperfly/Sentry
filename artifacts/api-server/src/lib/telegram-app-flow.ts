@@ -209,7 +209,7 @@ export function formatDashboard(input: {
       : "on"
     : "off";
   return [
-    "DreamEventBot",
+    "Sentry",
     "",
     `tUSDC: ${input.tusdc}`,
     `Positions: ${input.openPositions} / ${input.maxOpenPositions}`,
