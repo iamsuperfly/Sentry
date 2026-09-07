@@ -16,7 +16,11 @@ export function mainReplyKeyboard(autonomousOn = false): Keyboard {
     .text(BTN.wallet)
     .text(BTN.help)
     .resized()
-    .persistent();
+    .placeholder("Use the buttons below");
+}
+
+export function mainReplyKeyboardIsPersistent(): boolean {
+  return false;
 }
 
 export function faucetKeyboard(allowSkip: boolean): InlineKeyboard {
