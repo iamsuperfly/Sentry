@@ -27,7 +27,7 @@ function market(overrides: Record<string, unknown> = {}) {
   } as never;
 }
 
-test("5m is eligible inside final 120s and not before", () => {
+test("5m is eligible at any remaining tradable time", () => {
   const now = 1_700_000_000;
   assert.equal(
     marketEligibleForGemini(
@@ -42,6 +42,17 @@ test("5m is eligible inside final 120s and not before", () => {
         expiry: String(now + 200),
         intervalSec: "300",
         tradingStart: String(now - 100),
+      }),
+      now,
+    ),
+    true,
+  );
+  assert.equal(
+    marketEligibleForGemini(
+      market({
+        expiry: String(now),
+        intervalSec: "300",
+        tradingStart: String(now - 300),
       }),
       now,
     ),
