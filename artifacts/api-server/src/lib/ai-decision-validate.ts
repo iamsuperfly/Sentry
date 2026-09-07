@@ -1,5 +1,5 @@
 /**
- * Deterministic validation of Gemini (or any AI) trade candidates.
+ * Deterministic validation of Groq (or any AI) trade candidates.
  * Risk ceilings remain authoritative.
  * Live stake is assigned by adaptive-stake, not Groq.
  */

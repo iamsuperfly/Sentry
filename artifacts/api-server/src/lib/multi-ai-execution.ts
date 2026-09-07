@@ -8,7 +8,7 @@ import type { DreamdexMarketDiagnostic } from "./dreamdex.ts";
 import { attachMarketWindowMeta } from "./decision-market-meta.ts";
 import type { LiveSubmitResult } from "./live-execution.ts";
 import type { StrategyDecision } from "./strategy.ts";
-import { geminiCandidateToStrategyDecision } from "./gemini-path.ts";
+import { groqCandidateToStrategyDecision } from "./groq-path.ts";
 import { logger } from "./logger.ts";
 import type { TelegramIdentity } from "./trade-persistence.ts";
 
@@ -107,7 +107,7 @@ export async function processAiCandidateTrades(input: {
       continue;
     }
 
-    const mapped = geminiCandidateToStrategyDecision({
+    const mapped = groqCandidateToStrategyDecision({
       candidate,
       market,
       nowSec: input.nowSec,

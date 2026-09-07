@@ -1,13 +1,16 @@
-# Phase 1 — Market intelligence notes
+# Market intelligence notes
 
-## SDK 0.28.1 listing APIs (verified in package types)
+## Current production path
+
+- **1m markets:** deterministic Binance public spot ±0.05% in the final window. Independent REST sampler (~15s) feeds a rolling in-memory cache; the scan reads the cache and does not block on live polls.
+- **5m / 15m+ markets:** Groq (`GROQ_API_KEY`, optional `GROQ_MODEL`, default `openai/gpt-oss-20b`) ranks eligible markets. Missing key fails closed. Deterministic validation, adaptive stake, and risk still decide what executes.
+
+SDK 0.28.1 listing APIs (verified in package types):
+
 - `client.listBinaryMarkets(opts?)`
 - `client.listLiveBinaryMarkets(filter?)` — currently live (`expiry > now`)
 - Past/finalized discovery via past-binary list helpers for claim phase
 
-## 1m strategy
-Pure ±0.05% underlying move in final 30s. Requires injected BTC/ETH spot prices.
-No underlying price feed is wired in the repo yet — integration blocked until a verified free source is chosen.
+## Historical (Gemini)
 
-## Gemini
-`GEMINI_API_KEY` + optional `GEMINI_MODEL`. Missing key fails closed (no fake AI).
+Phase 1 originally used Google Gemini (`GEMINI_API_KEY` + optional `GEMINI_MODEL`). That provider is no longer on the production trading path and has been replaced by Groq. Git history still contains the Gemini client for reference.

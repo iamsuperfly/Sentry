@@ -524,7 +524,7 @@ export function createTelegramBot(config: AppConfig): Bot {
   bot.command("help", (ctx) =>
     ctx.reply(
       [
-        "DreamEventBot",
+        "Sentry",
         "",
         "Use the buttons below the chat.",
         "Help → Settings to change stake and limits.",
