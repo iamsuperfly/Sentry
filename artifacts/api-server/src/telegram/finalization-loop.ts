@@ -77,6 +77,7 @@ export function startFinalizationLoop(
             trade,
             config.explorerTxBaseUrl,
           );
+          if (!text.trim()) continue;
           await bot.api.sendMessage(trade.telegramUserId, text, {
             link_preview_options: { is_disabled: true },
           });
