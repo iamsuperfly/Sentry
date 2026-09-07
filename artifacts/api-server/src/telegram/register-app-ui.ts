@@ -286,7 +286,6 @@ export async function runTradeNow(ctx: Context, config: AppConfig) {
       const scan = result.marketScan ? `\n\n${formatTradeScanLine(result.marketScan)}` : "";
       await ctx.reply(
         formatUserFacingTradeFailure({ code: result.code, reason: result.reason }) + scan,
-        { reply_markup: mainReplyKeyboard(settings.autonomousEnabled) },
       );
       return;
     }
@@ -306,7 +305,6 @@ export async function runTradeNow(ctx: Context, config: AppConfig) {
       }),
       {
         link_preview_options: { is_disabled: true },
-        reply_markup: mainReplyKeyboard(settings.autonomousEnabled),
       },
     );
   } catch (error) {

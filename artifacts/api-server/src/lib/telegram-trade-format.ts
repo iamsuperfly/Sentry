@@ -4,7 +4,12 @@
  */
 
 import { resolveMarketDurationSeconds } from "./decision-market-meta.ts";
-import { isEarlyExitNote, sanitizeTechnicalErrorNote } from "./telegram-user-errors.ts";
+import {
+  isEarlyExitNote,
+  looksLikeBookMiss,
+  looksLikeIocNoFill,
+  sanitizeTechnicalErrorNote,
+} from "./telegram-user-errors.ts";
 
 export function parseUnixSeconds(raw: string | number | null | undefined): number | null {
   if (raw === null || raw === undefined) return null;
@@ -301,6 +306,30 @@ export function classifyFinalization(input: {
   return "settled";
 }
 
+export function isQuietZeroFillFinalization(input: {
+  status: string;
+  errorMessage?: string | null;
+  filledContracts?: number | null;
+  pnl?: number | null;
+}): boolean {
+  const status = input.status.toLowerCase();
+  if (status !== "failed" && status !== "cancelled") return false;
+  if (
+    typeof input.filledContracts === "number" &&
+    Number.isFinite(input.filledContracts) &&
+    input.filledContracts > 0
+  ) {
+    return false;
+  }
+  if (typeof input.pnl === "number" && Number.isFinite(input.pnl) && input.pnl !== 0) {
+    return false;
+  }
+  return (
+    looksLikeIocNoFill(status, input.errorMessage) ||
+    looksLikeBookMiss(status, input.errorMessage)
+  );
+}
+
 export function formatFinalizationMessage(input: {
   symbol: string;
   direction: string;
@@ -308,6 +337,7 @@ export function formatFinalizationMessage(input: {
   stake: number;
   outcome?: string | null;
   pnl?: number | null;
+  filledContracts?: number | null;
   tradingStart?: string | number | null;
   marketExpiry?: string | number | null;
   intervalSec?: string | number | null;
@@ -315,6 +345,7 @@ export function formatFinalizationMessage(input: {
   errorMessage?: string | null;
   explorerTxBaseUrl: string;
 }): string {
+  if (isQuietZeroFillFinalization(input)) return "";
   const kind = classifyFinalization(input);
   const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry, input.intervalSec);
   const timeframe = formatTimeframe(duration);

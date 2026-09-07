@@ -289,6 +289,7 @@ export function buildFinalizationTelegramText(
     stake: trade.stake,
     outcome: trade.outcome,
     pnl: trade.pnl,
+    filledContracts: trade.filledContracts,
     tradingStart: trade.tradingStart,
     marketExpiry: trade.marketExpiry,
     intervalSec: trade.intervalSec,
