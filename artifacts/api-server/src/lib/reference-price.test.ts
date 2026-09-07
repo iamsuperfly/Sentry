@@ -33,8 +33,8 @@ function clientFor(input: {
         oracleQuestionId: "42",
         numericValue:
           input.numericValue === undefined ? "8034670" : input.numericValue,
-        voidReason: input.voidReason ?? null,
-        resolvedAt: input.resolvedAt ?? "123",
+        voidReason: input.voidReason === undefined ? null : input.voidReason,
+        resolvedAt: input.resolvedAt === undefined ? "123" : input.resolvedAt,
       },
     }),
     getMarketCreator: async () => ({
@@ -106,6 +106,30 @@ test("voided opening answer fails closed", async () => {
     clientFor({ voidReason: 1 }),
   );
   assert.equal(result, null);
+});
+
+test("unresolved opening answer fails closed", async () => {
+  const result = await resolveMarketReferencePrice(
+    openingMarket(),
+    clientFor({ resolvedAt: null }),
+  );
+  assert.equal(result, null);
+});
+
+test("treats strike 0 as an opening market, not a fixed strike", () => {
+  assert.equal(parseFixedStrike("0"), null);
+  assert.equal(parseFixedStrike(0), null);
+  assert.equal(referencePriceForMarket({ strike: "0" }), null);
+  assert.equal(
+    referencePriceForMarket({ strike: "0", referencePrice: 80346.7 }),
+    80346.7,
+  );
+});
+
+test("missing Binance-equivalent spot leaves gap closed", () => {
+  assert.equal(calculateReferenceGapBps(null, 80346.7), null);
+  assert.equal(calculateReferenceGapBps(0, 80346.7), null);
+  assert.equal(calculateReferenceGapBps(80750, null), null);
 });
 
 test("unknown numericDecimals fails closed", async () => {
