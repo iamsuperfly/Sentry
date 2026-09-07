@@ -17,7 +17,7 @@ export function prepareGroqMarkets<T extends GroqRankMarket>(
     `Propose at most ${availableSlots} ENTER rows. Prefer SKIP when edge or book is weak.`,
     "JSON: { decisions: [{ marketId, direction UP|DOWN, confidence 0-1, reason, stake null }] }.",
     "Empty decisions = no trade. confidence is your probability the side wins.",
-    "Fields: id=marketId a=asset d=duration left=secondsToExpiry yA/nA=asks spr=spread qty=top ask size depth=yes/no ask sizes strike=contract strike spot=Binance spot gapBps=signed spot-vs-strike basis points.",
+    "Fields: id=marketId a=asset d=duration left=secondsToExpiry yA/nA=asks spr=spread qty=top ask size depth=yes/no ask sizes strike=contract strike refType=strike|opening ref=normalized reference USD price refDp=oracle decimals spot=Binance spot gapBps=signed spot-vs-reference basis points.",
     "Spot and gapBps may be absent when Binance is unavailable; never invent missing values.",
     JSON.stringify(selected.map(compactAiMarket)),
   ].join("\n");

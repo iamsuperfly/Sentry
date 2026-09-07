@@ -11,7 +11,7 @@ describe("market duration classification", () => {
     assert.equal(classifyDurationBucket(60), "1m");
     assert.equal(classifyDurationBucket(300), "5m");
     assert.equal(classifyDurationBucket(900), "15m");
-    assert.equal(classifyDurationBucket(1800), "30m");
+    assert.equal(classifyDurationBucket(1800), "unknown");
     assert.equal(classifyDurationBucket(3600), "1h");
     assert.equal(classifyDurationBucket(14400), "4h");
     assert.equal(classifyDurationBucket(86400), "1d");

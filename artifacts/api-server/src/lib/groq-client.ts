@@ -15,6 +15,9 @@ export type AiMarketInput = {
   windowSec: number | null;
   tradingStart?: string;
   expiry?: string;
+  referenceType?: "strike" | "opening";
+  referencePrice?: number;
+  referenceDecimals?: number | null;
   secondsToExpiry: number | null;
   tradable: boolean;
   finalized: boolean;

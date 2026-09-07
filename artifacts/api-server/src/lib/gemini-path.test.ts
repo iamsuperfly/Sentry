@@ -10,14 +10,18 @@ function market(overrides: Record<string, unknown> = {}) {
   return {
     marketId: "0x1",
     asset: "BTC",
+    strike: "68000",
     tradable: true,
     finalized: false,
     intervalSec: "300",
-    tradingStart: String(now - 180),
+    decimals: 2,
+    tradingStart: String(now - 210),
     expiry: String(now + 90),
     book: {
-      yes: { bids: [], asks: [{ price: "0.51", quantity: "10" }] },
-      no: { bids: [], asks: [{ price: "0.49", quantity: "10" }] },
+      yesBids: [],
+      yesAsks: [{ price: "0.51", quantity: "10" }],
+      noBids: [],
+      noAsks: [{ price: "0.49", quantity: "10" }],
     },
     ...overrides,
   } as never;
@@ -72,6 +76,32 @@ test("1m markets do not enter the Groq eligibility path", () => {
       now,
     ),
     false,
+  );
+});
+
+test("strike-0 opening markets are eligible only after a resolved reference price", () => {
+  const now = 1_700_000_000;
+  const opening = {
+    intervalSec: "3600",
+    tradingStart: String(now - 100),
+    expiry: String(now + 3500),
+    strike: "0",
+  };
+  assert.equal(
+    marketEligibleForGemini(market({ ...opening, referencePrice: undefined }), now),
+    false,
+  );
+  assert.equal(
+    marketEligibleForGemini(
+      market({
+        ...opening,
+        referenceType: "opening",
+        referencePrice: 80346.7,
+        referenceDecimals: 2,
+      }),
+      now,
+    ),
+    true,
   );
 });
 
