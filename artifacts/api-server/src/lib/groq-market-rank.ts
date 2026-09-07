@@ -12,6 +12,9 @@ export type GroqRankMarket = {
   yesAskQuantity?: number | null;
   noAskQuantity?: number | null;
   strike?: string;
+  referenceType?: "strike" | "opening";
+  referencePrice?: number;
+  referenceDecimals?: number | null;
   spot?: number;
   gapBps?: number;
 };
@@ -63,7 +66,7 @@ export function scoreMarketForGroq(m: GroqRankMarket): number {
     else score -= 6;
   }
 
-  if (m.durationBucket === "15m" || m.durationBucket === "30m" || m.durationBucket === "1h") {
+  if (m.durationBucket === "15m" || m.durationBucket === "1h") {
     score += 8;
   } else if (m.durationBucket === "5m") {
     score += 3;
@@ -95,6 +98,13 @@ export function compactAiMarket(m: GroqRankMarket): Record<string, unknown> {
   };
   if (m.topAskQuantity !== null) row.qty = m.topAskQuantity;
   if (m.strike) row.strike = m.strike;
+  if (m.referenceType) row.refType = m.referenceType;
+  if (m.referencePrice !== undefined && Number.isFinite(m.referencePrice)) {
+    row.ref = m.referencePrice;
+  }
+  if (m.referenceDecimals !== undefined && m.referenceDecimals !== null) {
+    row.refDp = m.referenceDecimals;
+  }
   if (m.spot !== undefined && Number.isFinite(m.spot)) row.spot = m.spot;
   if (m.gapBps !== undefined && Number.isFinite(m.gapBps)) row.gapBps = m.gapBps;
   if (

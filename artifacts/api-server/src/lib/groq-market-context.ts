@@ -5,37 +5,28 @@ import {
   type SpotPriceQuote,
   type SpotPriceResult,
 } from "./binance-spot.ts";
+import { parseFixedStrike, calculateReferenceGapBps } from "./reference-price.ts";
 
 export function parseMarketStrike(
   raw: string | number | null | undefined,
 ): number | null {
   if (raw === null || raw === undefined || raw === "") return null;
-  const value = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : null;
+  return parseFixedStrike(raw);
 }
 
 export function calculateGapBps(
   spot: number | null | undefined,
-  strike: number | null | undefined,
+  referencePrice: number | null | undefined,
 ): number | null {
-  if (
-    spot === null ||
-    spot === undefined ||
-    strike === null ||
-    strike === undefined ||
-    !Number.isFinite(spot) ||
-    !Number.isFinite(strike) ||
-    spot <= 0 ||
-    strike <= 0
-  ) {
-    return null;
-  }
-  return Math.round(((spot / strike - 1) * 10_000 + Number.EPSILON) * 100) / 100;
+  return calculateReferenceGapBps(spot, referencePrice);
 }
 
 export type GroqSpotMarket = {
   asset: string;
   strike?: string | number | null;
+  referenceType?: "strike" | "opening";
+  referencePrice?: number | null;
+  referenceDecimals?: number | null;
 };
 
 export function enrichGroqMarketWithSpot<T extends GroqSpotMarket>(
@@ -44,8 +35,9 @@ export function enrichGroqMarketWithSpot<T extends GroqSpotMarket>(
 ): T & { spot?: number; gapBps?: number } {
   if (!result?.ok) return market;
 
-  const strike = parseMarketStrike(market.strike);
-  const gapBps = calculateGapBps(result.quote.price, strike);
+  const referencePrice =
+    market.referencePrice ?? parseMarketStrike(market.strike);
+  const gapBps = calculateGapBps(result.quote.price, referencePrice);
   return {
     ...market,
     spot: result.quote.price,

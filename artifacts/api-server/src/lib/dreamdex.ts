@@ -9,6 +9,10 @@ import { somniaShannon } from "@somnia-chain/markets-sdk/chains";
 import type { Hex } from "viem";
 import type { AppConfig } from "../config";
 import { closeExchange } from "./exchange-lifecycle";
+import {
+  resolveMarketReferencePrice,
+  type MarketReference,
+} from "./reference-price";
 
 const SHANNON_CHAIN_ID = 50312;
 const ONCHAIN_TRADING_STATUS = 1;
@@ -36,6 +40,8 @@ export type DreamdexMarketDiagnostic = {
   asset: string;
   question: string;
   oracleQuestion: string | null;
+  oracleQuestionId?: string | null;
+  creator?: string | null;
   strike: string;
   /** Indexer BinaryMarket.tradingStart (unix seconds string). */
   tradingStart: string;
@@ -60,6 +66,9 @@ export type DreamdexMarketDiagnostic = {
   collateral: string;
   decimals: number;
   book: DreamdexBook;
+  referenceType?: MarketReference["referenceType"];
+  referencePrice?: number;
+  referenceDecimals?: number | null;
 };
 
 export type DreamdexDiagnostic = {
@@ -121,6 +130,8 @@ function serializeMarket(
     asset: market.asset,
     question: market.question,
     oracleQuestion: market.oracleQuestion,
+    oracleQuestionId: market.oracleQuestionId ?? null,
+    creator: market.creator ?? null,
     strike: market.strike,
     tradingStart: market.tradingStart,
     expiry: market.expiry,
@@ -202,7 +213,17 @@ export async function readDreamdexMarkets(
           depth: BOOK_DEPTH,
           decimals: onchain.decimals,
         });
-        return serializeMarket(market, onchain, book);
+        const diagnostic = serializeMarket(market, onchain, book);
+        try {
+          const reference = await resolveMarketReferencePrice(
+            market,
+            exchange.client,
+          );
+          return reference ? { ...diagnostic, ...reference } : diagnostic;
+        } catch {
+          // A stale/malformed reference market must not abort the full scan.
+          return diagnostic;
+        }
       }),
     );
 

@@ -106,7 +106,7 @@ export function formatScanSummaryLines(
     `Markets in this scan: ${s.discovered}`,
     `BTC: ${s.btc} · ETH: ${s.eth}`,
     `Tradable: ${s.tradable} · With usable asks: ${s.withUsableAsks}`,
-    `Durations (all): 1m=${s.byDuration["1m"]} 5m=${s.byDuration["5m"]} 15m=${s.byDuration["15m"]} 30m=${s.byDuration["30m"]} 1h=${s.byDuration["1h"]} 4h=${s.byDuration["4h"]} 1d=${s.byDuration["1d"]} other=${s.byDuration.unknown}`,
+    `Durations (all): 1m=${s.byDuration["1m"]} 5m=${s.byDuration["5m"]} 15m=${s.byDuration["15m"]} 1h=${s.byDuration["1h"]} 4h=${s.byDuration["4h"]} 1d=${s.byDuration["1d"]} other=${s.byDuration.unknown}`,
   ];
   if (s.aiCandidates !== undefined) lines.push(`AI candidates: ${s.aiCandidates}`);
   if (s.availableSlots !== undefined)
