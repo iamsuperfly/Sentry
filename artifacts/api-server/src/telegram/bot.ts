@@ -24,6 +24,7 @@ import {
 import { decryptPrivateKey, encryptPrivateKey } from "../lib/wallet-crypto";
 import { runTelegramTradeCycle } from "../lib/trade-orchestration";
 import { startAutonomousLoop } from "../lib/autonomous-loop";
+import { startBinanceSampler, stopBinanceSampler } from "../lib/binance-sampler";
 
 function formatTradeScanLine(scan: {
   discovered: number;
@@ -720,6 +721,7 @@ export function createTelegramBot(config: AppConfig): Bot {
 
 export function startTelegramBot(config: AppConfig): Bot {
   const bot = createTelegramBot(config);
+  startBinanceSampler();
   const finalization = startFinalizationLoop(bot, config);
   const autonomous = startAutonomousLoop(bot, config);
   void bot
@@ -732,6 +734,7 @@ export function startTelegramBot(config: AppConfig): Bot {
     );
   const originalStop = bot.stop.bind(bot);
   bot.stop = (...args: Parameters<typeof bot.stop>) => {
+    stopBinanceSampler();
     finalization.stop();
     autonomous.stop();
     return originalStop(...args);

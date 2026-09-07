@@ -1,5 +1,5 @@
 /**
- * AI → StrategyDecision mapping for 5m (final 120s) and 15m+ markets.
+ * AI → StrategyDecision mapping for 5m and 15m+ markets.
  * Pure helpers + orchestration-facing adapters. No secrets.
  */
 
@@ -29,6 +29,7 @@ function levelQuantity(
 export const GEMINI_STRATEGY_NAME = "gemini-v1";
 export const GEMINI_STRATEGY_VERSION = "1.0.0";
 
+/** @deprecated 5m markets are no longer gated to a final-120s window. */
 export const FIVE_MIN_AI_WINDOW_SEC = 120;
 
 /** Durations that use Groq/AI as the decision engine. */
@@ -57,8 +58,8 @@ export function marketEligibleForGemini(
   if (!isGeminiDurationBucket(bucket)) return false;
   if (referencePriceForMarket(market) === null) return false;
   const left = secondsToExpiry(market.expiry, nowSec);
-  if (left === null || left <= 60) return false;
-  if (bucket === "5m" && left > FIVE_MIN_AI_WINDOW_SEC) return false;
+  if (left === null || left <= 0) return false;
+  if (bucket !== "5m" && left <= 60) return false;
   const book = extractBookTop(market);
   return book.yesAsk !== null || book.noAsk !== null;
 }
