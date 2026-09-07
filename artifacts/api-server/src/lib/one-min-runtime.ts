@@ -5,6 +5,10 @@
 
 import { fetchBinanceSpotPrice } from "./binance-spot.ts";
 import {
+  getCachedSpotQuote,
+  listObservations,
+} from "./binance-sampler.ts";
+import {
   evaluateOneMinuteUnderlying,
   ONE_MIN_FINAL_WINDOW_SEC,
   ONE_MIN_STRATEGY_NAME,
@@ -64,7 +68,7 @@ export function marketInOneMinFinalWindow(
 }
 
 /**
- * Dual-sample within one cycle: fix reference from first tick, current from second.
+ * Cache-first 1m evaluation. Live ticker is only a fallback when the sampler is empty/stale.
  * Does not reset an existing reference for the same marketId.
  */
 export async function evaluateOneMinMarketWithBinance(input: {
@@ -91,60 +95,64 @@ export async function evaluateOneMinMarketWithBinance(input: {
     };
   }
 
-  const first = await fetchBinanceSpotPrice({
-    asset: input.market.asset,
-    fetchImpl: input.fetchImpl,
-  });
-  if (!first.ok) {
-    return {
-      decision: {
-        action: "skip",
-        code: first.code,
-        reason: first.reason,
-        secondsToExpiry: left ?? undefined,
-      },
-      referencePrice: null,
-      currentPrice: null,
-    };
+  const nowMs = Date.now();
+  const cached = getCachedSpotQuote(input.market.asset, nowMs);
+  const history = listObservations(input.market.asset);
+
+  let currentPrice: number | null = cached?.price ?? null;
+  let seedPrice: number | null = null;
+  if (history.length >= 2) {
+    seedPrice = history[0]!.price;
   }
 
-  if (getOneMinReference(input.market.marketId) === null) {
-    setOneMinReference(input.market.marketId, first.quote.price);
+  if (currentPrice === null) {
+    const live = await fetchBinanceSpotPrice({
+      asset: input.market.asset,
+      fetchImpl: input.fetchImpl,
+    });
+    if (!live.ok) {
+      return {
+        decision: {
+          action: "skip",
+          code: live.code,
+          reason: live.reason,
+          secondsToExpiry: left ?? undefined,
+        },
+        referencePrice: null,
+        currentPrice: null,
+      };
+    }
+    currentPrice = live.quote.price;
+    if (seedPrice === null) seedPrice = live.quote.price;
+  }
+
+  if (getOneMinReference(input.market.marketId) === null && seedPrice !== null) {
+    setOneMinReference(input.market.marketId, seedPrice);
   }
   const referencePrice = getOneMinReference(input.market.marketId);
 
-  const gap = input.sampleGapMs ?? 800;
-  if (gap > 0) {
-    await new Promise((r) => setTimeout(r, gap));
-  }
-
-  const second = await fetchBinanceSpotPrice({
-    asset: input.market.asset,
-    fetchImpl: input.fetchImpl,
-  });
-  if (!second.ok) {
+  if (referencePrice === null || currentPrice === null) {
     return {
       decision: {
         action: "skip",
-        code: second.code,
-        reason: second.reason,
-        referencePrice: referencePrice ?? undefined,
+        code: "binance_stale",
+        reason: "No fresh Binance observation for 1m evaluation.",
         secondsToExpiry: left ?? undefined,
       },
       referencePrice,
-      currentPrice: null,
+      currentPrice,
     };
   }
 
   const decision = evaluateOneMinuteUnderlying({
     secondsToExpiry: left,
     referencePrice,
-    currentPrice: second.quote.price,
+    currentPrice,
   });
   return {
     decision,
     referencePrice,
-    currentPrice: second.quote.price,
+    currentPrice,
   };
 }
 
