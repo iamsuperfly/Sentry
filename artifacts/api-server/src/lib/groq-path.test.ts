@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  marketEligibleForGemini,
-  toGeminiMarketInput,
-} from "./gemini-path.ts";
+  marketEligibleForGroq,
+  toGroqMarketInput,
+} from "./groq-path.ts";
 
 function market(overrides: Record<string, unknown> = {}) {
   const now = 1_700_000_000;
@@ -30,14 +30,14 @@ function market(overrides: Record<string, unknown> = {}) {
 test("5m is eligible at any remaining tradable time", () => {
   const now = 1_700_000_000;
   assert.equal(
-    marketEligibleForGemini(
+    marketEligibleForGroq(
       market({ expiry: String(now + 90), intervalSec: "300" }),
       now,
     ),
     true,
   );
   assert.equal(
-    marketEligibleForGemini(
+    marketEligibleForGroq(
       market({
         expiry: String(now + 200),
         intervalSec: "300",
@@ -48,7 +48,7 @@ test("5m is eligible at any remaining tradable time", () => {
     true,
   );
   assert.equal(
-    marketEligibleForGemini(
+    marketEligibleForGroq(
       market({
         expiry: String(now),
         intervalSec: "300",
@@ -63,7 +63,7 @@ test("5m is eligible at any remaining tradable time", () => {
 test("15m remains eligible outside the 5m window", () => {
   const now = 1_700_000_000;
   assert.equal(
-    marketEligibleForGemini(
+    marketEligibleForGroq(
       market({
         intervalSec: "900",
         tradingStart: String(now - 100),
@@ -78,7 +78,7 @@ test("15m remains eligible outside the 5m window", () => {
 test("1m markets do not enter the Groq eligibility path", () => {
   const now = 1_700_000_000;
   assert.equal(
-    marketEligibleForGemini(
+    marketEligibleForGroq(
       market({
         intervalSec: "60",
         tradingStart: String(now - 30),
@@ -99,11 +99,11 @@ test("strike-0 opening markets are eligible only after a resolved reference pric
     strike: "0",
   };
   assert.equal(
-    marketEligibleForGemini(market({ ...opening, referencePrice: undefined }), now),
+    marketEligibleForGroq(market({ ...opening, referencePrice: undefined }), now),
     false,
   );
   assert.equal(
-    marketEligibleForGemini(
+    marketEligibleForGroq(
       market({
         ...opening,
         referenceType: "opening",
@@ -118,7 +118,7 @@ test("strike-0 opening markets are eligible only after a resolved reference pric
 
 test("maps the DreamDEX strike and normalized ask depth into AI input", () => {
   const now = 1_700_000_000;
-  const input = toGeminiMarketInput(
+  const input = toGroqMarketInput(
     market({
       strike: "68000",
       decimals: 6,
