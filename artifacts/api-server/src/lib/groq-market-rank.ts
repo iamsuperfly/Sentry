@@ -17,6 +17,14 @@ export type GroqRankMarket = {
   referenceDecimals?: number | null;
   spot?: number;
   gapBps?: number;
+  ch1?: number;
+  ch3?: number;
+  ch5?: number;
+  ch10?: number;
+  ch15?: number;
+  ch30?: number;
+  trend?: "up" | "down" | "flat";
+  vol?: number;
 };
 
 export const DEFAULT_GROQ_MARKET_CAP = 8;
@@ -107,6 +115,14 @@ export function compactAiMarket(m: GroqRankMarket): Record<string, unknown> {
   }
   if (m.spot !== undefined && Number.isFinite(m.spot)) row.spot = m.spot;
   if (m.gapBps !== undefined && Number.isFinite(m.gapBps)) row.gapBps = m.gapBps;
+  if (m.ch1 !== undefined && Number.isFinite(m.ch1)) row.ch1 = m.ch1;
+  if (m.ch3 !== undefined && Number.isFinite(m.ch3)) row.ch3 = m.ch3;
+  if (m.ch5 !== undefined && Number.isFinite(m.ch5)) row.ch5 = m.ch5;
+  if (m.ch10 !== undefined && Number.isFinite(m.ch10)) row.ch10 = m.ch10;
+  if (m.ch15 !== undefined && Number.isFinite(m.ch15)) row.ch15 = m.ch15;
+  if (m.ch30 !== undefined && Number.isFinite(m.ch30)) row.ch30 = m.ch30;
+  if (m.trend) row.trend = m.trend;
+  if (m.vol !== undefined && Number.isFinite(m.vol)) row.vol = m.vol;
   if (
     (m.yesAskQuantity !== undefined && m.yesAskQuantity !== null) ||
     (m.noAskQuantity !== undefined && m.noAskQuantity !== null)
