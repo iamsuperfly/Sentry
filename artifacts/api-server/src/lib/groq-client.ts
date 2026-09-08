@@ -146,6 +146,54 @@ function parseDecisions(raw: unknown): AiCandidateDecision[] | null {
   return out;
 }
 
+export type GroqParsedDecisionLog = {
+  provider: "groq";
+  model: string;
+  marketId?: string;
+  asset?: string;
+  duration?: string;
+  decision: "UP" | "DOWN" | "SKIP";
+  confidence?: number;
+  reason?: string;
+  side?: "YES" | "NO";
+};
+
+/** Sanitized Railway-visible rows from the parsed Groq JSON. Does not include the prompt or secrets. */
+export function groqParsedDecisionLogs(
+  decisions: AiCandidateDecision[],
+  markets: Array<{
+    marketId: string;
+    asset: string;
+    durationBucket: string;
+  }>,
+  model: string,
+): GroqParsedDecisionLog[] {
+  const byId = new Map(markets.map((market) => [market.marketId, market]));
+  if (decisions.length === 0) {
+    return [
+      {
+        provider: "groq",
+        model,
+        decision: "SKIP",
+      },
+    ];
+  }
+  return decisions.map((decision) => {
+    const market = byId.get(decision.marketId);
+    return {
+      provider: "groq",
+      model,
+      marketId: decision.marketId,
+      ...(market?.asset ? { asset: market.asset } : {}),
+      ...(market?.durationBucket ? { duration: market.durationBucket } : {}),
+      decision: decision.direction,
+      confidence: decision.confidence,
+      reason: decision.reason,
+      side: decision.direction === "UP" ? "YES" : "NO",
+    };
+  });
+}
+
 function truncateProviderErrorBody(raw: string, maxLen: number): string {
   const cleaned = raw.replace(/\s+/g, " ").trim();
   if (!cleaned) return "";
@@ -377,6 +425,14 @@ export async function callGroqMarketDecisions(input: {
       },
       "AI request completed",
     );
+
+    for (const row of groqParsedDecisionLogs(
+      decisions,
+      prepared.selected,
+      model,
+    )) {
+      console.info(row, "AI parsed decision");
+    }
 
     return {
       ok: true,

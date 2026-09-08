@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   callGroqMarketDecisions,
+  groqParsedDecisionLogs,
   isGroqConfigured,
   DEFAULT_GROQ_MODEL,
 } from "./groq-client.ts";
@@ -146,5 +147,126 @@ describe("groq client", () => {
       },
     });
     assert.equal(auth, "Bearer secret-key-value");
+  });
+
+  it("formats parsed Groq UP/DOWN rows for Railway without the prompt", () => {
+    const rows = groqParsedDecisionLogs(
+      [
+        {
+          marketId: "m-down",
+          direction: "DOWN",
+          confidence: 0.78,
+          reason: "spot below opening",
+          stake: null,
+        },
+      ],
+      [
+        {
+          marketId: "m-down",
+          asset: "BTC",
+          durationBucket: "1h",
+        },
+      ],
+      DEFAULT_GROQ_MODEL,
+    );
+    assert.deepEqual(rows, [
+      {
+        provider: "groq",
+        model: DEFAULT_GROQ_MODEL,
+        marketId: "m-down",
+        asset: "BTC",
+        duration: "1h",
+        decision: "DOWN",
+        confidence: 0.78,
+        reason: "spot below opening",
+        side: "NO",
+      },
+    ]);
+    assert.equal(JSON.stringify(rows).includes("GROQ_API_KEY"), false);
+  });
+
+  it("logs SKIP when Groq returns an empty decisions array", () => {
+    const rows = groqParsedDecisionLogs([], [], DEFAULT_GROQ_MODEL);
+    assert.deepEqual(rows, [
+      {
+        provider: "groq",
+        model: DEFAULT_GROQ_MODEL,
+        decision: "SKIP",
+      },
+    ]);
+  });
+
+  it("emits AI parsed decision after a successful Groq parse", async () => {
+    const lines: unknown[] = [];
+    const original = console.info;
+    console.info = (...args: unknown[]) => {
+      lines.push(args);
+    };
+    try {
+      const r = await callGroqMarketDecisions({
+        apiKey: "test-key",
+        model: DEFAULT_GROQ_MODEL,
+        markets: [
+          {
+            marketId: "m1",
+            asset: "ETH",
+            durationBucket: "5m",
+            intervalSec: 300,
+            windowSec: 300,
+            secondsToExpiry: 180,
+            tradable: true,
+            finalized: false,
+            yesBid: 0.48,
+            yesAsk: 0.5,
+            noBid: 0.48,
+            noAsk: 0.51,
+            spread: 0.02,
+            topAskQuantity: 10,
+          },
+        ],
+        availableSlots: 1,
+        fetchImpl: async () =>
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      decisions: [
+                        {
+                          marketId: "m1",
+                          direction: "DOWN",
+                          confidence: 0.78,
+                          reason: "spot below opening",
+                          stake: null,
+                        },
+                      ],
+                    }),
+                  },
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+      });
+      assert.equal(r.ok, true);
+    } finally {
+      console.info = original;
+    }
+    const parsed = lines.find(
+      (args) => Array.isArray(args) && args[1] === "AI parsed decision",
+    ) as unknown[] | undefined;
+    assert.ok(parsed);
+    assert.deepEqual(parsed[0], {
+      provider: "groq",
+      model: DEFAULT_GROQ_MODEL,
+      marketId: "m1",
+      asset: "ETH",
+      duration: "5m",
+      decision: "DOWN",
+      confidence: 0.78,
+      reason: "spot below opening",
+      side: "NO",
+    });
   });
 });
