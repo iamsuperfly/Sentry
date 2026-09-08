@@ -232,26 +232,30 @@ describe("evaluateMarket", () => {
 });
 
 describe("evaluateMarkets", () => {
-  it("sorts enters by edge descending", () => {
+  it("sorts enters by least time remaining then marketId", () => {
     const now = 1_700_000_000;
     const run = evaluateMarkets(
       [
         market({
-          marketId: "0xlow",
+          marketId: "0xfar",
           expiry: String(now + 900),
+          intervalSec: "900",
+          tradingStart: String(now),
           book: {
             yesBids: [],
-            yesAsks: [{ price: p(0.41), quantity: "1" }],
+            yesAsks: [{ price: p(0.35), quantity: "1" }],
             noBids: [],
             noAsks: [],
           },
         }),
         market({
-          marketId: "0xhigh",
-          expiry: String(now + 900),
+          marketId: "0xnear",
+          expiry: String(now + 400),
+          intervalSec: "900",
+          tradingStart: String(now - 500),
           book: {
             yesBids: [],
-            yesAsks: [{ price: p(0.35), quantity: "1" }],
+            yesAsks: [{ price: p(0.41), quantity: "1" }],
             noBids: [],
             noAsks: [],
           },
@@ -266,11 +270,8 @@ describe("evaluateMarkets", () => {
     );
     assert.equal(run.enterCount, 2);
     assert.equal(run.skipCount, 1);
-    assert.equal(run.decisions[0]?.marketId, "0xhigh");
-    assert.equal(run.decisions[1]?.marketId, "0xlow");
-    assert.ok(
-      (run.decisions[0]?.edge ?? 0) > (run.decisions[1]?.edge ?? 0),
-    );
+    assert.equal(run.decisions[0]?.marketId, "0xnear");
+    assert.equal(run.decisions[1]?.marketId, "0xfar");
   });
 
   it("respects custom minSecondsToExpiry", () => {
@@ -298,5 +299,89 @@ describe("evaluateMarkets", () => {
     );
     assert.equal(run.enterCount, 0);
     assert.equal(run.decisions[0]?.skipCode, "near_expiry");
+  });
+
+  it("allows 5m markets with at least 120s remaining", () => {
+    const now = 1_700_000_000;
+    const d = evaluateMarket(
+      market({
+        marketId: "0x5m",
+        intervalSec: "300",
+        tradingStart: String(now - 150),
+        expiry: String(now + 150),
+        book: {
+          yesBids: [],
+          yesAsks: [{ price: p(0.4), quantity: "1" }],
+          noBids: [],
+          noAsks: [],
+        },
+      }),
+      now,
+    );
+    assert.equal(d.action, "enter");
+    assert.equal(d.direction, "YES");
+  });
+
+  it("skips 5m markets under 120s remaining", () => {
+    const now = 1_700_000_000;
+    const d = evaluateMarket(
+      market({
+        marketId: "0x5m-late",
+        intervalSec: "300",
+        tradingStart: String(now - 220),
+        expiry: String(now + 80),
+        book: {
+          yesBids: [],
+          yesAsks: [{ price: p(0.4), quantity: "1" }],
+          noBids: [],
+          noAsks: [],
+        },
+      }),
+      now,
+    );
+    assert.equal(d.action, "skip");
+    assert.equal(d.skipCode, "near_expiry");
+  });
+
+  it("keeps the 300s gate on 15m+", () => {
+    const now = 1_700_000_000;
+    const d = evaluateMarket(
+      market({
+        marketId: "0x15m",
+        intervalSec: "900",
+        tradingStart: String(now - 700),
+        expiry: String(now + 200),
+        book: {
+          yesBids: [],
+          yesAsks: [{ price: p(0.4), quantity: "1" }],
+          noBids: [],
+          noAsks: [],
+        },
+      }),
+      now,
+    );
+    assert.equal(d.action, "skip");
+    assert.equal(d.skipCode, "near_expiry");
+  });
+
+  it("does not let edge-taker trade 1m markets", () => {
+    const now = 1_700_000_000;
+    const d = evaluateMarket(
+      market({
+        marketId: "0x1m",
+        intervalSec: "60",
+        tradingStart: String(now - 10),
+        expiry: String(now + 50),
+        book: {
+          yesBids: [],
+          yesAsks: [{ price: p(0.4), quantity: "1" }],
+          noBids: [],
+          noAsks: [],
+        },
+      }),
+      now,
+    );
+    assert.equal(d.action, "skip");
+    assert.equal(d.skipCode, "one_min_market");
   });
 });

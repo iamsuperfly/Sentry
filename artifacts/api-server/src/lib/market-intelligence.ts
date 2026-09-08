@@ -67,7 +67,7 @@ export function summarizeMarketIntelligence(
   let eth = 0;
 
   for (const m of markets) {
-    const asset = m.asset.toUpperCase();
+    const asset = String(m.asset ?? "").toUpperCase();
     if (asset === "BTC") btc++;
     if (asset === "ETH") eth++;
     const { bucket } = classifyMarketDuration({
