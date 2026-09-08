@@ -301,3 +301,294 @@ export async function runTradeNow(ctx: Context, config: AppConfig) {
     tradeActive.delete(ctx.from.id);
   }
 }
+
+async function showAuto(ctx: Context, config: AppConfig) {
+  const settings = await getUserSettingsForTelegram(config, identityFrom(ctx));
+  const on = settings.autonomousEnabled;
+  await ctx.reply(
+    on
+      ? "Autonomous trading is running.\n\nThe bot scans every 6 minutes and manages eligible positions automatically."
+      : "Autonomous trading is paused.",
+    { reply_markup: autoKeyboard(on) },
+  );
+}
+
+async function setAuto(ctx: Context, config: AppConfig, enabled: boolean) {
+  const settings = await enableTrading(config, ctx);
+  await setAutonomousEnabled(config, settings.userId, enabled, ctx.chat?.id ?? ctx.from!.id);
+  await ctx.reply(
+    enabled
+      ? "Autonomous trading is running.\n\nThe bot scans every 6 minutes and manages eligible positions automatically."
+      : "Autonomous trading is paused.",
+    { reply_markup: mainReplyKeyboard(enabled) },
+  );
+}
+
+async function showPositions(ctx: Context, config: AppConfig) {
+  const userId = await ensureUser(config, ctx.from!);
+  const positions = await listActivePositionsForDisplay(config, userId);
+  const text =
+    positions.length === 0
+      ? "No open positions."
+      : formatPositionsMessage(positions, config.explorerTxBaseUrl);
+  await ctx.reply(text, {
+    link_preview_options: { is_disabled: true },
+    reply_markup: positionsKeyboard(),
+  });
+}
+
+async function showPerformance(ctx: Context, config: AppConfig) {
+  const settings = await getUserSettingsForTelegram(config, identityFrom(ctx));
+  const performance = await getPerformanceSummary(
+    config,
+    settings.userId,
+    new Date(),
+    settings.timezone,
+  );
+  const decided = performance.wins + performance.losses;
+  const winRate = decided > 0 ? `${Math.round((performance.wins / decided) * 100)}%` : "\u2014";
+  await ctx.reply(
+    [formatPerformanceMessage(performance), "", `Win rate: ${winRate}`, `Total decided trades: ${decided}`].join(
+      "\n",
+    ),
+    { reply_markup: backToMenuKeyboard() },
+  );
+}
+
+async function showWallet(ctx: Context, config: AppConfig) {
+  const wallet = await findWallet(config, ctx.from!.id);
+  if (!wallet) {
+    await ctx.reply("Tap Start to create your wallet first.");
+    return;
+  }
+  const current = await balances(config, wallet.address);
+  const short = `${wallet.address.slice(0, 6)}\u2026${wallet.address.slice(-4)}`;
+  await ctx.reply(
+    [
+      "Wallet",
+      "",
+      `Address: ${short}`,
+      `tUSDC: ${current.tusdc}`,
+      `STT: ${current.stt}`,
+      "Network: Somnia Shannon testnet",
+    ].join("\n"),
+    { reply_markup: backToMenuKeyboard() },
+  );
+}
+
+async function runClaim(ctx: Context, config: AppConfig) {
+  const wallet = await findWallet(config, ctx.from!.id);
+  if (!wallet) {
+    await ctx.reply("Tap Start to create your wallet first.");
+    return;
+  }
+  const userId = await ensureUser(config, ctx.from!);
+  await ctx.reply("Checking settled positions\u2026");
+  const attempts = await runUserClaimScan({
+    config,
+    userId,
+    walletAddress: wallet.address,
+    encryptedPrivateKey: wallet.encrypted_private_key,
+  });
+  await ctx.reply(formatClaimMessage(attempts), {
+    link_preview_options: { is_disabled: true },
+    reply_markup: backToMenuKeyboard(),
+  });
+}
+
+async function showHelp(ctx: Context) {
+  await ctx.reply("Help", { reply_markup: helpKeyboard() });
+}
+
+async function showSettings(ctx: Context, config: AppConfig) {
+  const settings = await getUserSettingsForTelegram(config, identityFrom(ctx));
+  await ctx.reply(formatSettingsSnapshot(settings), { reply_markup: settingsKeyboard() });
+}
+
+async function askSetting(ctx: Context, field: SettingField, config: AppConfig) {
+  setConversation(ctx.from!.id, { kind: "setting", field });
+  await ctx.reply(`Enter your new value:\n\n${rangeHint(field, config.systemLimits)}`);
+}
+
+export async function handleConversationText(
+  ctx: Context,
+  config: AppConfig,
+): Promise<boolean> {
+  if (!ctx.from || !ctx.message || typeof ctx.message.text !== "string") return false;
+  const text = ctx.message.text.trim();
+  if (text.startsWith("/")) return false;
+  if (isMainMenuLabel(text) || text.startsWith(BTN.autonomous)) {
+    clearConversation(ctx.from.id);
+    if (text === BTN.tradeNow) await runTradeNow(ctx, config);
+    else if (text.startsWith(BTN.autonomous)) await showAuto(ctx, config);
+    else if (text === BTN.positions) await showPositions(ctx, config);
+    else if (text === BTN.performance) await showPerformance(ctx, config);
+    else if (text === BTN.wallet) await showWallet(ctx, config);
+    else if (text === BTN.help) await showHelp(ctx);
+    return true;
+  }
+
+  const state = getConversation(ctx.from.id);
+  if (state.kind === "idle" || state.kind === "onboard_faucet") return false;
+
+  if (state.kind === "faucet_amount") {
+    const ok = await runFaucetAmount(ctx, config, text);
+    if (ok) {
+      clearConversation(ctx.from.id);
+      await beginConfiguration(ctx, config);
+    }
+    return true;
+  }
+
+  if (state.kind === "onboard") {
+    const applied = tryApplyOnboardValue(state.draft, state.step, text, config.systemLimits);
+    if (!applied.ok) {
+      await ctx.reply(`${applied.reason}\n\n${rangeHint(state.step, config.systemLimits)}`);
+      return true;
+    }
+    const confirm = formatOnboardConfirm(state.step, applied.settings);
+    if (applied.next) {
+      setConversation(ctx.from.id, {
+        kind: "onboard",
+        step: applied.next,
+        draft: applied.settings,
+      });
+      await ctx.reply(`${confirm}\n\n${formatAskStep(applied.next)}`);
+      return true;
+    }
+    await saveUserSettingsForTelegram(config, identityFrom(ctx), {
+      ...applied.settings,
+      tradingEnabled: true,
+    });
+    clearConversation(ctx.from.id);
+    await ctx.reply(SETUP_COMPLETE_TEXT);
+    await showDashboard(ctx, config);
+    return true;
+  }
+
+  if (state.kind === "setting") {
+    const current = await getUserSettingsForTelegram(config, identityFrom(ctx));
+    const applied = tryApplySetting(current, state.field, text, config.systemLimits);
+    if (!applied.ok) {
+      await ctx.reply(`${applied.reason}\n\n${rangeHint(state.field, config.systemLimits)}`);
+      return true;
+    }
+    await saveUserSettingsForTelegram(config, identityFrom(ctx), applied.settings);
+    clearConversation(ctx.from.id);
+    await ctx.reply(applied.label);
+    await showSettings(ctx, config);
+    return true;
+  }
+
+  return false;
+}
+
+export function registerAppUi(bot: Bot, config: AppConfig): void {
+  bot.callbackQuery("app:faucet", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const ok = await runFaucetAmount(ctx, config, DEFAULT_FAUCET_AMOUNT);
+    if (ok) await beginConfiguration(ctx, config);
+  });
+  bot.callbackQuery("app:faucet_skip", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await beginConfiguration(ctx, config);
+  });
+  bot.callbackQuery("app:menu", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showDashboard(ctx, config);
+  });
+  bot.callbackQuery("app:help", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showHelp(ctx);
+  });
+  bot.callbackQuery("app:help_trading", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      [
+        "Trading",
+        "",
+        "TRADE NOW runs one market scan and places trades when conditions match.",
+        "AUTONOMOUS repeats that scan every 6 minutes.",
+      ].join("\n"),
+      { reply_markup: helpKeyboard() },
+    );
+  });
+  bot.callbackQuery("app:how", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await ctx.reply(
+      [
+        "How it works",
+        "",
+        "1. Get test tokens.",
+        "2. Set your stake and limits.",
+        "3. Tap TRADE NOW or start autonomous trading.",
+        "4. Claim settled wins from Positions or Help.",
+      ].join("\n"),
+      { reply_markup: helpKeyboard() },
+    );
+  });
+  bot.callbackQuery("app:settings", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showSettings(ctx, config);
+  });
+  bot.callbackQuery("app:wallet", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showWallet(ctx, config);
+  });
+  bot.callbackQuery("app:auto", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showAuto(ctx, config);
+  });
+  bot.callbackQuery("app:auto_on", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await setAuto(ctx, config, true);
+  });
+  bot.callbackQuery("app:auto_off", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await setAuto(ctx, config, false);
+  });
+  bot.callbackQuery("app:claim", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await runClaim(ctx, config);
+  });
+  bot.callbackQuery("app:set_stake", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await askSetting(ctx, "defaultStake", config);
+  });
+  bot.callbackQuery("app:set_max", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await askSetting(ctx, "maxTradeStake", config);
+  });
+  bot.callbackQuery("app:set_loss", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await askSetting(ctx, "maxDailyLoss", config);
+  });
+  bot.callbackQuery("app:set_pos", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await askSetting(ctx, "maxOpenPositions", config);
+  });
+  bot.callbackQuery("app:set_profit", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await askSetting(ctx, "dailyProfitTarget", config);
+  });
+  bot.callbackQuery("app:history", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showHistory(ctx, config);
+  });
+  bot.callbackQuery("app:leaderboard", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await showLeaderboard(ctx, config);
+  });
+  bot.callbackQuery("app:pk_warn", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await warnPrivateKey(ctx);
+  });
+  bot.callbackQuery("app:pk_reveal", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await revealPrivateKey(ctx, config);
+  });
+  bot.callbackQuery("app:pk_hide", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    await hidePrivateKey(ctx);
+  });
+}
