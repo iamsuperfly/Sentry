@@ -26,39 +26,6 @@ import { runTelegramTradeCycle } from "../lib/trade-orchestration";
 import { startAutonomousLoop } from "../lib/autonomous-loop";
 import { startBinanceSampler, stopBinanceSampler } from "../lib/binance-sampler";
 
-function formatTradeScanLine(scan: {
-  discovered: number;
-  tradable: number;
-  withUsableAsks?: number;
-  btc?: number;
-  eth?: number;
-  byDuration?: Record<string, number>;
-  availableSlots?: number;
-  selected?: number;
-}): string {
-  const parts = [
-    `Markets found: ${scan.discovered}`,
-    `tradable: ${scan.tradable}`,
-  ];
-  if (scan.withUsableAsks !== undefined) {
-    parts.push(`usable asks: ${scan.withUsableAsks}`);
-  }
-  if (scan.btc !== undefined && scan.eth !== undefined) {
-    parts.push(`BTC: ${scan.btc}`, `ETH: ${scan.eth}`);
-  }
-  if (scan.byDuration) {
-    const d = scan.byDuration;
-    parts.push(
-      `1m=${d["1m"] ?? 0} 5m=${d["5m"] ?? 0} 15m=${d["15m"] ?? 0} 1h=${d["1h"] ?? 0} 4h=${d["4h"] ?? 0} 1d=${d["1d"] ?? 0}`,
-    );
-  }
-  if (scan.availableSlots !== undefined) {
-    parts.push(`available slots: ${scan.availableSlots}`);
-  }
-  if (scan.selected !== undefined) parts.push(`selected: ${scan.selected}`);
-  return parts.join(" · ");
-}
-
 import {
   applySettingsPatch,
   formatSettingsHelp,
@@ -479,18 +446,14 @@ export function createTelegramBot(config: AppConfig): Bot {
         stake: settings.defaultStake,
       });
       if (!result.ok) {
-        const scan = result.marketScan
-          ? `\n\n${formatTradeScanLine(result.marketScan)}`
-          : "";
         await ctx.reply(
           formatUserFacingTradeFailure({
             code: result.code,
             reason: result.reason,
-          }) + scan,
+          }),
         );
         return;
       }
-      const marketsLine = formatTradeScanLine(result.marketScan);
       await ctx.reply(
         formatMultiTradeReply({
           trades: result.trades ?? [],
@@ -501,7 +464,7 @@ export function createTelegramBot(config: AppConfig): Bot {
             stake: result.stake,
             execution: result.execution,
           },
-          marketsLine,
+          marketsLine: "",
           executionMode: settings.executionMode,
           explorerTxBaseUrl: config.explorerTxBaseUrl,
         }),
