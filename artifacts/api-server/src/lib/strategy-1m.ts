@@ -1,22 +1,24 @@
 /**
- * Deterministic 1-minute strategy (±0.05% underlying move in final 30s).
- * Pure — underlying prices injected by caller. Does not use order-book fair value.
+ * Deterministic 1-minute Binance vote.
+ * Five usable prints → four signed moves vs the previous print.
+ * Fail closed on missing/flat data. No ±0.05% trigger, no Groq.
  */
 
-export const ONE_MIN_STRATEGY_NAME = "one-min-underlying-0.05pct-v1";
-export const ONE_MIN_FINAL_WINDOW_SEC = 30;
-export const ONE_MIN_MOVE_FRACTION = 0.0005;
+export const ONE_MIN_STRATEGY_NAME = "one-min-binance-vote-v1";
+export const ONE_MIN_MIN_SECONDS_TO_EXPIRY = 30;
+export const ONE_MIN_REQUIRED_PRINTS = 5;
 
 export type OneMinDirection = "UP" | "DOWN";
+export type OneMinMove = "UP" | "DOWN";
 
 export type OneMinDecision =
   | {
       action: "enter";
       direction: OneMinDirection;
-      referencePrice: number;
-      currentPrice: number;
-      upperTrigger: number;
-      lowerTrigger: number;
+      prices: number[];
+      moves: OneMinMove[];
+      upCount: number;
+      downCount: number;
       secondsToExpiry: number;
       reason: string;
     }
@@ -24,29 +26,76 @@ export type OneMinDecision =
       action: "skip";
       reason: string;
       code: string;
-      referencePrice?: number;
-      currentPrice?: number;
+      prices?: number[];
       secondsToExpiry?: number;
     };
 
-export function computeTriggers(referencePrice: number): {
-  upperTrigger: number;
-  lowerTrigger: number;
-} {
-  return {
-    upperTrigger: referencePrice * (1 + ONE_MIN_MOVE_FRACTION),
-    lowerTrigger: referencePrice * (1 - ONE_MIN_MOVE_FRACTION),
-  };
+export function usableBinancePrints(
+  prices: ReadonlyArray<number | null | undefined>,
+): number[] {
+  const out: number[] = [];
+  for (const price of prices) {
+    if (typeof price === "number" && Number.isFinite(price) && price > 0) {
+      out.push(price);
+    }
+  }
+  return out;
 }
 
-export function evaluateOneMinuteUnderlying(input: {
+export function classifyAdjacentMoves(
+  prices: readonly number[],
+):
+  | { ok: true; moves: OneMinMove[]; upCount: number; downCount: number }
+  | { ok: false; code: string; reason: string } {
+  if (prices.length < ONE_MIN_REQUIRED_PRINTS) {
+    return {
+      ok: false,
+      code: "insufficient_prints",
+      reason: `Need ${ONE_MIN_REQUIRED_PRINTS} usable Binance prints; have ${prices.length}.`,
+    };
+  }
+  const window = prices.slice(-ONE_MIN_REQUIRED_PRINTS);
+  const moves: OneMinMove[] = [];
+  for (let i = 1; i < window.length; i++) {
+    const prev = window[i - 1]!;
+    const next = window[i]!;
+    if (next > prev) moves.push("UP");
+    else if (next < prev) moves.push("DOWN");
+    else {
+      return {
+        ok: false,
+        code: "flat_move",
+        reason: `Print ${i} equals print ${i - 1} (${next}); cannot classify UP/DOWN. SKIP.`,
+      };
+    }
+  }
+  const upCount = moves.filter((m) => m === "UP").length;
+  const downCount = moves.filter((m) => m === "DOWN").length;
+  return { ok: true, moves, upCount, downCount };
+}
+
+export function voteOneMinuteDirection(
+  upCount: number,
+  downCount: number,
+): OneMinDirection | "SKIP" {
+  if (upCount === 4 && downCount === 0) return "DOWN";
+  if (downCount === 4 && upCount === 0) return "UP";
+  if (upCount === 3 && downCount === 1) return "UP";
+  if (downCount === 3 && upCount === 1) return "DOWN";
+  return "SKIP";
+}
+
+export function evaluateOneMinuteVote(input: {
   secondsToExpiry: number | null;
-  referencePrice: number | null | undefined;
-  currentPrice: number | null | undefined;
+  prices: ReadonlyArray<number | null | undefined>;
 }): OneMinDecision {
   const left = input.secondsToExpiry;
   if (left === null || !Number.isFinite(left)) {
-    return { action: "skip", code: "bad_expiry", reason: "Could not parse seconds to expiry." };
+    return {
+      action: "skip",
+      code: "bad_expiry",
+      reason: "Could not parse seconds to expiry.",
+    };
   }
   if (left <= 0) {
     return {
@@ -56,84 +105,55 @@ export function evaluateOneMinuteUnderlying(input: {
       secondsToExpiry: left,
     };
   }
-  if (left > ONE_MIN_FINAL_WINDOW_SEC) {
+  if (left < ONE_MIN_MIN_SECONDS_TO_EXPIRY) {
     return {
       action: "skip",
-      code: "not_final_window",
-      reason: `Only evaluate in final ${ONE_MIN_FINAL_WINDOW_SEC}s (have ${Math.floor(left)}s left).`,
+      code: "too_close_to_expiry",
+      reason: `1m requires at least ${ONE_MIN_MIN_SECONDS_TO_EXPIRY}s remaining (have ${Math.floor(left)}s).`,
       secondsToExpiry: left,
     };
   }
 
-  const ref = input.referencePrice;
-  const cur = input.currentPrice;
-  if (ref === null || ref === undefined || !Number.isFinite(ref) || ref <= 0) {
+  const prints = usableBinancePrints(input.prices);
+  const classified = classifyAdjacentMoves(prints);
+  if (!classified.ok) {
     return {
       action: "skip",
-      code: "missing_reference_price",
-      reason: "Reference underlying price is missing or invalid.",
-      secondsToExpiry: left,
-    };
-  }
-  if (cur === null || cur === undefined || !Number.isFinite(cur) || cur <= 0) {
-    return {
-      action: "skip",
-      code: "missing_current_price",
-      reason: "Current underlying price is missing or invalid.",
-      referencePrice: ref,
+      code: classified.code,
+      reason: classified.reason,
+      prices: prints.slice(-ONE_MIN_REQUIRED_PRINTS),
       secondsToExpiry: left,
     };
   }
 
-  const { upperTrigger, lowerTrigger } = computeTriggers(ref);
-  const hitUp = cur >= upperTrigger;
-  const hitDown = cur <= lowerTrigger;
-  if (hitUp && !hitDown) {
+  const direction = voteOneMinuteDirection(
+    classified.upCount,
+    classified.downCount,
+  );
+  const window = prints.slice(-ONE_MIN_REQUIRED_PRINTS);
+  if (direction === "SKIP") {
     return {
-      action: "enter",
-      direction: "UP",
-      referencePrice: ref,
-      currentPrice: cur,
-      upperTrigger,
-      lowerTrigger,
+      action: "skip",
+      code: "tied_moves",
+      reason: `Binance moves split ${classified.upCount} UP / ${classified.downCount} DOWN.`,
+      prices: window,
       secondsToExpiry: left,
-      reason: `Underlying ${cur} reached +0.05% trigger ${upperTrigger} from ref ${ref}.`,
-    };
-  }
-  if (hitDown && !hitUp) {
-    return {
-      action: "enter",
-      direction: "DOWN",
-      referencePrice: ref,
-      currentPrice: cur,
-      upperTrigger,
-      lowerTrigger,
-      secondsToExpiry: left,
-      reason: `Underlying ${cur} reached -0.05% trigger ${lowerTrigger} from ref ${ref}.`,
-    };
-  }
-  if (hitUp && hitDown) {
-    const upMove = Math.abs(cur / ref - 1);
-    const downMove = Math.abs(1 - cur / ref);
-    const direction: OneMinDirection = upMove >= downMove ? "UP" : "DOWN";
-    return {
-      action: "enter",
-      direction,
-      referencePrice: ref,
-      currentPrice: cur,
-      upperTrigger,
-      lowerTrigger,
-      secondsToExpiry: left,
-      reason: `Both triggers crossed; chose ${direction} by larger move from ref ${ref}.`,
     };
   }
 
+  const contrarian =
+    (classified.upCount === 4 && direction === "DOWN") ||
+    (classified.downCount === 4 && direction === "UP");
   return {
-    action: "skip",
-    code: "no_trigger",
-    reason: `Neither ±0.05% trigger hit (ref=${ref}, current=${cur}, up=${upperTrigger}, down=${lowerTrigger}).`,
-    referencePrice: ref,
-    currentPrice: cur,
+    action: "enter",
+    direction,
+    prices: window,
+    moves: classified.moves,
+    upCount: classified.upCount,
+    downCount: classified.downCount,
     secondsToExpiry: left,
+    reason: contrarian
+      ? `Contrarian ${direction}: ${classified.upCount} UP / ${classified.downCount} DOWN across last ${ONE_MIN_REQUIRED_PRINTS} prints.`
+      : `Follow ${direction}: ${classified.upCount} UP / ${classified.downCount} DOWN across last ${ONE_MIN_REQUIRED_PRINTS} prints.`,
   };
 }
