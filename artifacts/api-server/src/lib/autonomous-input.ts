@@ -17,6 +17,7 @@ export function buildAutonomousTradeCycleInput(
     },
     liveExecutionRequested: shouldRequestLiveExecution(row.executionMode, true),
     stakeMode: "adaptive",
+    fillAvailableSlots: true,
     excludeMarketIds: excludedMarketIds,
   };
 }

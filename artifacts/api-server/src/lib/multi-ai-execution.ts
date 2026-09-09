@@ -29,3 +29,24 @@ export function computeAvailableSlots(input: {
   const maxOpen = Math.min(input.userMaxOpen, input.systemMaxOpen);
   return Math.max(0, maxOpen - input.openCount);
 }
+
+/** Ranked candidates kept in order; take min(eligible, available slots). */
+export function takeRankedUpToSlots<T>(
+  ranked: readonly T[],
+  availableSlots: number,
+): T[] {
+  if (!Number.isFinite(availableSlots) || availableSlots <= 0) return [];
+  return ranked.slice(0, Math.floor(availableSlots));
+}
+
+export const SLOT_EXHAUSTED_CODES = new Set([
+  "user_max_open_positions",
+  "system_max_open_positions",
+]);
+
+export const DAY_HALT_CODES = new Set([
+  "trading_disabled",
+  "user_daily_loss_stop",
+  "system_daily_loss_stop",
+  "daily_profit_target_reached",
+]);

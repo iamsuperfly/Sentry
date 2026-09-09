@@ -347,7 +347,7 @@ export async function runAutonomousTick(
           },
           "autonomous execution result",
         );
-        let okText = `Autonomous scan\n\nTrades: ${result.trades?.length ?? 1}`;
+        let okText = `Autonomous scan\n\nTrades: ${result.trades?.length ?? 0}`;
         try {
           okText = `Autonomous scan\n\n${formatMultiTradeReply({
             trades: result.trades ?? [],
