@@ -9,6 +9,7 @@ describe("settlementFieldsFromMarket", () => {
     stake: 10,
     filledContracts: 20,
     contracts: 20,
+    limitPrice: 0.5,
   };
 
   it("computes win when YES (0) wins and direction is up", () => {

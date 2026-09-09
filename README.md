@@ -10,7 +10,7 @@ Sentry creates a per-user testnet wallet, discovers live BTC/ETH Up/Down markets
 
 1. Onboard a dedicated wallet (STT gas sponsor + daily tUSDC faucet).
 2. Discover tradable BTC/ETH Event Contracts via `@somnia-chain/markets-sdk` `0.29.0`.
-3. Apply timing gates, then pick one market (nearest expiry among ENTERs).
+3. Apply timing gates, then pick **one** market (nearest expiry among ENTERs). Each autonomous scan reports `Trades: 1` because it executes that single selected ENTER — not because discovery only found one market.
 4. Decide YES/NO from the book (5m/15m+) or a Binance five-print vote (1m).
 5. Size the stake, run risk checks, submit an IOC order.
 6. Manage, settle, and claim.
@@ -54,7 +54,7 @@ Risk always applies: min/max stake, daily loss, max open positions, collateral, 
 
 - Telegram buttons: TRADE NOW, AUTONOMOUS, POSITIONS, PERFORMANCE, WALLET, HELP
 - Commands: `/trade`, `/auto`, `/settings`, `/faucet`, `/status`, `/positions`, `/history`, `/claim`, `/leaderboard`, `/fund`, `/privatekey`. `/stop` pauses autonomous only
-- Autonomous 6-minute scan + early-loss management + claim sweep. Pauses at UTC midnight until TRADE NOW or `/auto on`
+- Autonomous 6-minute scan (one ENTER per scan) + early-loss management + claim sweep. Pauses at UTC midnight until TRADE NOW or `/auto on`
 - IOC execution, partial fills, zero-fill quieting
 - Settlement PnL from on-chain `winningOutcome` + filled contracts; `/claim` redeems win/void ERC-6909 balances as tUSDC
 

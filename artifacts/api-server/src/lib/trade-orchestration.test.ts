@@ -391,4 +391,119 @@ describe("runTelegramTradeCycle", () => {
     if (!result.ok) assert.equal(result.code, "no_enter_decision");
     assert.equal(persistCalled, false);
   });
+
+  it("passes adaptive stakeMode without a manual stake", async () => {
+    let persistStake: number | undefined;
+    let persistMode: string | undefined;
+    const result = await runTelegramTradeCycle({
+      config: baseConfig(),
+      identity: { id: 11, first_name: "U" },
+      stakeMode: "adaptive",
+      stake: 30,
+      deps: {
+        readMarkets: async () =>
+          ({ markets: [{}] }) as unknown as DreamdexDiagnostic,
+        evaluate: () => strategyRun([enterDecision()]),
+        persistIntent: async (input) => {
+          persistStake = input.stake;
+          persistMode = input.stakeMode;
+          return {
+            ok: true,
+            userId: "u11",
+            trade: { id: "t11" },
+            intent: { ...intentFor("u11", "0xw11"), stake: 15 },
+          };
+        },
+        executePersisted: async (input) => ({
+          ok: false,
+          gated: true,
+          code: "live_execution_disabled",
+          reason: "blocked",
+          tradeId: input.tradeId,
+          status: "pending",
+        }),
+      },
+    });
+    assert.equal(persistMode, "adaptive");
+    assert.equal(persistStake, undefined);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.marketScan.selected, 1);
+      assert.equal(result.trades.length, 1);
+    }
+  });
+
+  it("keeps manual defaultStake when stakeMode is omitted", async () => {
+    let persistStake: number | undefined;
+    let persistMode: string | undefined;
+    await runTelegramTradeCycle({
+      config: baseConfig(),
+      identity: { id: 12, first_name: "U" },
+      stake: 30,
+      deps: {
+        readMarkets: async () =>
+          ({ markets: [{}] }) as unknown as DreamdexDiagnostic,
+        evaluate: () => strategyRun([enterDecision()]),
+        persistIntent: async (input) => {
+          persistStake = input.stake;
+          persistMode = input.stakeMode;
+          return {
+            ok: true,
+            userId: "u12",
+            trade: { id: "t12" },
+            intent: intentFor("u12", "0xw12"),
+          };
+        },
+        executePersisted: async (input) => ({
+          ok: false,
+          gated: true,
+          code: "live_execution_disabled",
+          reason: "blocked",
+          tradeId: input.tradeId,
+          status: "pending",
+        }),
+      },
+    });
+    assert.equal(persistMode, "manual");
+    assert.equal(persistStake, 30);
+  });
+
+  it("selects one ENTER per scan even when several candidates exist", async () => {
+    const first = enterDecision({ marketId: "0xfirst" });
+    const second = enterDecision({ marketId: "0xsecond" });
+    let persistedMarket: string | undefined;
+    const result = await runTelegramTradeCycle({
+      config: baseConfig(),
+      identity: { id: 13, first_name: "U" },
+      deps: {
+        readMarkets: async () =>
+          ({ markets: [{}] }) as unknown as DreamdexDiagnostic,
+        evaluate: () => strategyRun([first, second]),
+        persistIntent: async (input) => {
+          persistedMarket = input.decision.marketId;
+          return {
+            ok: true,
+            userId: "u13",
+            trade: { id: "t13" },
+            intent: intentFor("u13", "0xw13"),
+          };
+        },
+        executePersisted: async (input) => ({
+          ok: false,
+          gated: true,
+          code: "live_execution_disabled",
+          reason: "blocked",
+          tradeId: input.tradeId,
+          status: "pending",
+        }),
+      },
+    });
+    assert.equal(persistedMarket, "0xfirst");
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.marketScan.selected, 1);
+      assert.equal(result.trades.length, 1);
+      assert.equal(result.trades[0]?.marketId, "0xfirst");
+    }
+  });
 });

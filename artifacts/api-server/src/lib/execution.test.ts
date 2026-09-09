@@ -120,13 +120,13 @@ describe("validateUserSettings", () => {
     if (!r.ok) assert.equal(r.code, "default_above_user_max");
   });
 
-  it("rejects max_daily_loss above system 70", () => {
+  it("rejects max_daily_loss above system max", () => {
     const r = validateUserSettings(
       {
         tradingEnabled: true,
         defaultStake: 1,
         maxTradeStake: 1,
-        maxDailyLoss: 100,
+        maxDailyLoss: system.maxDailyLoss + 1,
         maxOpenPositions: 1,
         dailyProfitTarget: null,
         executionMode: "testnet",
@@ -137,14 +137,14 @@ describe("validateUserSettings", () => {
     if (!r.ok) assert.equal(r.code, "max_daily_loss_above_system_max");
   });
 
-  it("rejects max_open_positions above system 5", () => {
+  it("rejects max_open_positions above system max", () => {
     const r = validateUserSettings(
       {
         tradingEnabled: true,
         defaultStake: 1,
         maxTradeStake: 1,
         maxDailyLoss: 10,
-        maxOpenPositions: 9,
+        maxOpenPositions: system.maxOpenPositions + 1,
         dailyProfitTarget: null,
         executionMode: "testnet",
       },
@@ -252,8 +252,8 @@ describe("evaluateRisk system + user layers", () => {
       limitPrice: 0.4,
       settings: {
         ...validUser,
-        maxOpenPositions: 5,
-        openPositionCount: 5,
+        maxOpenPositions: system.maxOpenPositions,
+        openPositionCount: system.maxOpenPositions,
       },
       system,
     });
@@ -293,8 +293,8 @@ describe("evaluateRisk system + user layers", () => {
       limitPrice: 0.4,
       settings: {
         ...validUser,
-        maxDailyLoss: 70,
-        realizedPnlToday: -70,
+        maxDailyLoss: system.maxDailyLoss,
+        realizedPnlToday: -system.maxDailyLoss,
       },
       system,
     });

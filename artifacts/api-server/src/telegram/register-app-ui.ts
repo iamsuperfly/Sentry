@@ -254,7 +254,7 @@ export async function runTradeNow(ctx: Context, config: AppConfig) {
     }
     const settings = await enableTrading(config, ctx);
     if (settings.autonomousEnabled) {
-      await resumeAutonomousIfEnabled(config, settings.userId, ctx.chat.id);
+      await resumeAutonomousIfEnabled(config, settings.userId, ctx.chat?.id ?? ctx.from!.id);
     }
     const liveRequested = shouldRequestLiveExecution(settings.executionMode, true);
     const result = await runTelegramTradeCycle({

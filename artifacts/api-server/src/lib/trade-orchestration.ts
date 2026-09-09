@@ -105,8 +105,6 @@ export type MarketScanSummary = {
   btc?: number;
   eth?: number;
   byDuration?: Record<string, number>;
-  aiConfigured?: boolean;
-  aiCandidates?: number;
   availableSlots?: number;
   selected?: number;
   listingApi?: string;
@@ -254,15 +252,12 @@ export async function runTelegramTradeCycle(input: {
     eth: intel.eth,
     byDuration: intel.byDuration,
     listingApi: snapshot.listingApi,
-    aiConfigured: false,
-    aiCandidates: 0,
     selected: 0,
   };
 
   if (useInjectedStrategy) {
     const strategy = deps.evaluate(snapshot.markets);
     marketScan.enterCandidates = strategy.enterCount;
-    marketScan.aiConfigured = false;
     const selected = selectEnterDecision(strategy);
     if (!selected) {
       return {
@@ -330,12 +325,10 @@ export async function runTelegramTradeCycle(input: {
     if (oneMinEnters[0]) {
       marketScan.enterCandidates = oneMinEnters.length;
       marketScan.selected = 1;
-      marketScan.aiConfigured = false;
       decision = attachMarketWindowMeta(oneMinEnters[0], snapshot.markets);
     } else {
       const strategy = deps.evaluate(snapshot.markets);
       marketScan.enterCandidates = strategy.enterCount;
-      marketScan.aiConfigured = false;
       const selected = selectEnterDecision(strategy);
       if (!selected) {
         return {
