@@ -28,6 +28,10 @@ import {
 } from "./trade-state.ts";
 import { setAutonomousEnabled } from "./autonomous-state.ts";
 import {
+  remainingDailyLossBudget,
+  sizeAdaptiveStakeFromEntry,
+} from "./adaptive-stake.ts";
+import {
   DEFAULT_USER_TIMEZONE,
   getZonedDayBounds,
 } from "./user-timezone.ts";
@@ -453,6 +457,7 @@ export async function createPersistedTradeIntent(input: {
   identity: TelegramIdentity;
   decision: StrategyDecision;
   stake?: number;
+  stakeMode?: "manual" | "adaptive";
 }): Promise<
   | { ok: true; userId: string; trade: unknown; intent: TradeIntent }
   | { ok: false; code: string; reason: string; idempotencyKey: string }
@@ -474,13 +479,40 @@ export async function createPersistedTradeIntent(input: {
     realizedPnlToday,
     collateralBalance: Number(walletBalances.tusdc),
   };
+
+  let stake = input.stake;
+  if (input.stakeMode === "adaptive") {
+    const remainingBudget = remainingDailyLossBudget({
+      realizedPnlToday,
+      userMaxDailyLoss: storedSettings.maxDailyLoss,
+      systemMaxDailyLoss: input.config.systemLimits.maxDailyLoss,
+    });
+    const sized = sizeAdaptiveStakeFromEntry({
+      entryPrice: input.decision.limitPriceHint ?? Number.NaN,
+      maxTradeStake: storedSettings.maxTradeStake,
+      systemMinStake: input.config.systemLimits.minStake,
+      systemMaxStake: input.config.systemLimits.maxStake,
+      remainingBudget,
+      collateralBalance: Number(walletBalances.tusdc),
+    });
+    if (!sized.ok) {
+      return {
+        ok: false,
+        code: sized.code,
+        reason: sized.reason,
+        idempotencyKey: "",
+      };
+    }
+    stake = sized.stake;
+  }
+
   const built = buildTradeIntent({
     userId,
     walletAddress: wallet.address,
     decision: input.decision,
     settings,
     system: input.config.systemLimits,
-    stake: input.stake,
+    stake,
   });
 
   if (!built.ok) return built;

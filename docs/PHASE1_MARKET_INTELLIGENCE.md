@@ -2,15 +2,13 @@
 
 ## Current production path
 
-- **1m markets:** deterministic Binance public spot ±0.05% in the final window. Independent REST sampler (~15s) feeds a rolling in-memory cache; the scan reads the cache and does not block on live polls.
-- **5m / 15m+ markets:** Groq (`GROQ_API_KEY`, optional `GROQ_MODEL`, default `openai/gpt-oss-20b`) ranks eligible markets. Missing key fails closed. Deterministic validation, adaptive stake, and risk still decide what executes.
+- **1m markets:** five Binance sampler prints → four adjacent UP/DOWN moves (`left >= 30s`). Fail closed on missing/flat data.
+- **5m / 15m+ markets:** deterministic `edge-taker-v1` on the DreamDEX book. Timing: 5m `left >= 120s`, 15m+ `left >= 300s`. Rank by nearest expiry.
 
-SDK 0.28.1 listing APIs (verified in package types):
+SDK 0.29.0 listing APIs:
 
-- `client.listBinaryMarkets(opts?)`
-- `client.listLiveBinaryMarkets(filter?)` — currently live (`expiry > now`)
+- `client.listLiveBinaryMarkets(filter?)` — currently live (`expiry > now`), paginated (`limit`/`offset`)
+- `client.listBinaryMarkets(opts?)` — fallback
 - Past/finalized discovery via past-binary list helpers for claim phase
 
-## Historical (Gemini)
-
-Phase 1 originally used Google Gemini (`GEMINI_API_KEY` + optional `GEMINI_MODEL`). That provider is no longer on the production trading path and has been replaced by Groq. Git history still contains the Gemini client for reference.
+There is no LLM on the live trading path.

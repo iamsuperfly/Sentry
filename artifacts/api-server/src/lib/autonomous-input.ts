@@ -16,7 +16,7 @@ export function buildAutonomousTradeCycleInput(
       first_name: row.firstName || "trader",
     },
     liveExecutionRequested: shouldRequestLiveExecution(row.executionMode, true),
-    stake: row.defaultStake,
+    stakeMode: "adaptive",
     excludeMarketIds: excludedMarketIds,
   };
 }

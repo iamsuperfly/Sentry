@@ -53,6 +53,7 @@ export type TradeOrchestrationDeps = {
     identity: TelegramIdentity;
     decision: StrategyDecision;
     stake?: number;
+    stakeMode?: "manual" | "adaptive";
   }) => Promise<PersistResult>;
   executePersisted: (input: {
     config: AppConfig;
@@ -156,6 +157,7 @@ export async function runTelegramTradeCycle(input: {
   identity: TelegramIdentity;
   liveExecutionRequested?: boolean;
   stake?: number;
+  stakeMode?: "manual" | "adaptive";
   asset?: string;
   excludeMarketIds?: string[];
   deps?: Partial<TradeOrchestrationDeps> | TradeOrchestrationDeps;
@@ -376,7 +378,8 @@ export async function runTelegramTradeCycle(input: {
       config: input.config,
       identity: input.identity,
       decision,
-      stake: resolvedStake,
+      stake: input.stakeMode === "adaptive" ? undefined : resolvedStake,
+      stakeMode: input.stakeMode ?? "manual",
     });
   } catch (error) {
     const message =

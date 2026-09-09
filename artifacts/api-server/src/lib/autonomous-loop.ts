@@ -278,7 +278,7 @@ export async function runAutonomousTick(
           userId: row.userId,
           excludeMarketIds: excludedMarketIds.length,
           liveRequested: shouldRequestLiveExecution(row.executionMode, true),
-          stake: row.defaultStake,
+          stakeMode: "adaptive",
         },
         "autonomous scan started",
       );
