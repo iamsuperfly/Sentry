@@ -39,9 +39,6 @@ const envSchema = z.object({
   SYSTEM_MAX_STAKE_TUSDC: z.string().optional(),
   SYSTEM_MAX_OPEN_POSITIONS: z.string().optional(),
   SYSTEM_MAX_DAILY_LOSS_TUSDC: z.string().optional(),
-  GROQ_API_KEY: z.string().optional(),
-  GROQ_MODEL: z.string().optional(),
-  GROQ_BASE_URL: z.string().optional(),
 });
 
 export type AppConfig = {
@@ -58,9 +55,6 @@ export type AppConfig = {
   walletEncryptionKey: string;
   enableLiveExecution: boolean;
   systemLimits: SystemRiskLimits;
-  groqApiKey: string | null;
-  groqModel: string;
-  groqBaseUrl: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -99,9 +93,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       SYSTEM_MAX_OPEN_POSITIONS: parsed.data.SYSTEM_MAX_OPEN_POSITIONS,
       SYSTEM_MAX_DAILY_LOSS_TUSDC: parsed.data.SYSTEM_MAX_DAILY_LOSS_TUSDC,
     }),
-    groqApiKey: parsed.data.GROQ_API_KEY?.trim() || null,
-    groqModel: parsed.data.GROQ_MODEL?.trim() || "openai/gpt-oss-20b",
-    groqBaseUrl:
-      parsed.data.GROQ_BASE_URL?.trim() || "https://api.groq.com/openai/v1",
   };
 }

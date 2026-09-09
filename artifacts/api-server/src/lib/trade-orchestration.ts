@@ -19,7 +19,12 @@ import {
   oneMinEnterToStrategyDecision,
 } from "./one-min-runtime.ts";
 import type { TelegramIdentity } from "./trade-persistence.ts";
-import type { CandidateTradeAttempt } from "./multi-ai-execution.ts";
+import {
+  computeAvailableSlots,
+  DAY_HALT_CODES,
+  SLOT_EXHAUSTED_CODES,
+  type CandidateTradeAttempt,
+} from "./multi-ai-execution.ts";
 
 export const ORCHESTRATION_MODULE = "stage-6-execution-wiring";
 
@@ -53,6 +58,7 @@ export type TradeOrchestrationDeps = {
     identity: TelegramIdentity;
     decision: StrategyDecision;
     stake?: number;
+    stakeMode?: "manual" | "adaptive";
   }) => Promise<PersistResult>;
   executePersisted: (input: {
     config: AppConfig;
@@ -60,6 +66,10 @@ export type TradeOrchestrationDeps = {
     tradeId: string;
     liveExecutionRequested: boolean;
   }) => Promise<LiveSubmitResult>;
+  readSlotState?: (input: {
+    config: AppConfig;
+    identity: TelegramIdentity;
+  }) => Promise<{ availableSlots: number }>;
 };
 
 export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestrationDeps> {
@@ -69,6 +79,8 @@ export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestr
     {
       createPersistedTradeIntent,
       expireStalePendingTradeIntentsForTelegram,
+      getUserSettingsForTelegram,
+      getOpenPositionCount,
     },
     { readPendingMarketState },
     { executePersistedTradeForTelegram },
@@ -92,6 +104,17 @@ export async function loadDefaultTradeOrchestrationDeps(): Promise<TradeOrchestr
     persistIntent:
       createPersistedTradeIntent as TradeOrchestrationDeps["persistIntent"],
     executePersisted: executePersistedTradeForTelegram,
+    readSlotState: async ({ config, identity }) => {
+      const settings = await getUserSettingsForTelegram(config, identity);
+      const openCount = await getOpenPositionCount(config, settings.userId);
+      return {
+        availableSlots: computeAvailableSlots({
+          userMaxOpen: settings.maxOpenPositions,
+          systemMaxOpen: config.systemLimits.maxOpenPositions,
+          openCount,
+        }),
+      };
+    },
   };
 }
 
@@ -104,8 +127,6 @@ export type MarketScanSummary = {
   btc?: number;
   eth?: number;
   byDuration?: Record<string, number>;
-  aiConfigured?: boolean;
-  aiCandidates?: number;
   availableSlots?: number;
   selected?: number;
   listingApi?: string;
@@ -143,12 +164,38 @@ function tradeIdFromPersisted(trade: unknown): string | null {
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 
+/** ENTER decisions in the existing rank order (nearest expiry, then marketId). */
+export function rankedEnterDecisions(
+  run: StrategyRunResult,
+): StrategyDecision[] {
+  return run.decisions.filter((d) => d.action === "enter");
+}
+
 export function selectEnterDecision(
   run: StrategyRunResult,
 ): StrategyDecision | null {
-  const enters = run.decisions.filter((d) => d.action === "enter");
-  if (enters.length === 0) return null;
-  return enters[0] ?? null;
+  return rankedEnterDecisions(run)[0] ?? null;
+}
+
+function emptyScanSuccess(
+  decision: StrategyDecision,
+  marketScan: MarketScanSummary,
+): OrchestrationSuccess {
+  return {
+    ok: true,
+    userId: "",
+    tradeId: "",
+    decision,
+    intentSymbol: "",
+    stake: 0,
+    execution: {
+      ok: false,
+      code: "no_trade_attempted",
+      reason: "No trade was attempted in this scan.",
+    },
+    marketScan: { ...marketScan, selected: 0 },
+    trades: [],
+  };
 }
 
 export async function runTelegramTradeCycle(input: {
@@ -156,6 +203,9 @@ export async function runTelegramTradeCycle(input: {
   identity: TelegramIdentity;
   liveExecutionRequested?: boolean;
   stake?: number;
+  stakeMode?: "manual" | "adaptive";
+  fillAvailableSlots?: boolean;
+  availableSlots?: number;
   asset?: string;
   excludeMarketIds?: string[];
   deps?: Partial<TradeOrchestrationDeps> | TradeOrchestrationDeps;
@@ -200,6 +250,7 @@ export async function runTelegramTradeCycle(input: {
     executePersisted: provided.executePersisted ?? defaults!.executePersisted,
     expireStalePending:
       provided.expireStalePending ?? defaults?.expireStalePending,
+    readSlotState: provided.readSlotState ?? defaults?.readSlotState,
   };
   const useInjectedStrategy = Boolean(provided.evaluate);
 
@@ -240,7 +291,6 @@ export async function runTelegramTradeCycle(input: {
     })),
   );
 
-  let decision: StrategyDecision;
   let resolvedStake = input.stake;
   const marketScan: MarketScanSummary = {
     discovered: snapshot.discoveredCount,
@@ -252,27 +302,17 @@ export async function runTelegramTradeCycle(input: {
     eth: intel.eth,
     byDuration: intel.byDuration,
     listingApi: snapshot.listingApi,
-    aiConfigured: false,
-    aiCandidates: 0,
     selected: 0,
   };
+
+  let ranked: StrategyDecision[] = [];
 
   if (useInjectedStrategy) {
     const strategy = deps.evaluate(snapshot.markets);
     marketScan.enterCandidates = strategy.enterCount;
-    marketScan.aiConfigured = false;
-    const selected = selectEnterDecision(strategy);
-    if (!selected) {
-      return {
-        ok: false,
-        code: "no_enter_decision",
-        reason:
-          "No market currently meets the entry conditions (edge, liquidity, time left).",
-        marketScan,
-      };
-    }
-    marketScan.selected = 1;
-    decision = attachMarketWindowMeta(selected, snapshot.markets);
+    ranked = rankedEnterDecisions(strategy).map((d) =>
+      attachMarketWindowMeta(d, snapshot.markets),
+    );
   } else {
     const nowSec = Math.floor(Date.now() / 1000);
     const oneMinEnters: StrategyDecision[] = [];
@@ -327,26 +367,47 @@ export async function runTelegramTradeCycle(input: {
 
     if (oneMinEnters[0]) {
       marketScan.enterCandidates = oneMinEnters.length;
-      marketScan.selected = 1;
-      marketScan.aiConfigured = false;
-      decision = attachMarketWindowMeta(oneMinEnters[0], snapshot.markets);
+      ranked = oneMinEnters.map((d) =>
+        attachMarketWindowMeta(d, snapshot.markets),
+      );
     } else {
       const strategy = deps.evaluate(snapshot.markets);
       marketScan.enterCandidates = strategy.enterCount;
-      marketScan.aiConfigured = false;
-      const selected = selectEnterDecision(strategy);
-      if (!selected) {
-        return {
-          ok: false,
-          code: "no_enter_decision",
-          reason:
-            "No market currently meets the entry conditions (edge, liquidity, time left).",
-          marketScan,
-        };
-      }
-      marketScan.selected = 1;
-      decision = attachMarketWindowMeta(selected, snapshot.markets);
+      ranked = rankedEnterDecisions(strategy).map((d) =>
+        attachMarketWindowMeta(d, snapshot.markets),
+      );
     }
+  }
+
+  if (ranked.length === 0) {
+    return {
+      ok: false,
+      code: "no_enter_decision",
+      reason:
+        "No market currently meets the entry conditions (edge, liquidity, time left).",
+      marketScan,
+    };
+  }
+
+  const fillSlots = input.fillAvailableSlots === true;
+  let maxFills = 1;
+  if (fillSlots) {
+    if (typeof input.availableSlots === "number") {
+      maxFills = Math.max(0, Math.floor(input.availableSlots));
+    } else if (deps.readSlotState) {
+      try {
+        const state = await deps.readSlotState({
+          config: input.config,
+          identity: input.identity,
+        });
+        maxFills = Math.max(0, Math.floor(state.availableSlots));
+      } catch {
+        maxFills = ranked.length;
+      }
+    } else {
+      maxFills = ranked.length;
+    }
+    marketScan.availableSlots = maxFills;
   }
 
   if (deps.expireStalePending) {
@@ -365,83 +426,150 @@ export async function runTelegramTradeCycle(input: {
         ok: false,
         code: "stale_intent_cleanup_failed",
         reason: message,
-        decision,
+        decision: ranked[0],
       };
     }
   }
 
-  let persisted: PersistResult;
-  try {
-    persisted = await deps.persistIntent({
+  if (maxFills <= 0) {
+    return emptyScanSuccess(ranked[0]!, marketScan);
+  }
+
+  const attempts: CandidateTradeAttempt[] = [];
+  let lastRiskFail: {
+    code: string;
+    reason: string;
+    decision: StrategyDecision;
+  } | null = null;
+  let userId = "";
+
+  for (const decision of ranked) {
+    if (attempts.length >= maxFills) break;
+
+    let persisted: PersistResult;
+    try {
+      persisted = await deps.persistIntent({
+        config: input.config,
+        identity: input.identity,
+        decision,
+        stake: input.stakeMode === "adaptive" ? undefined : resolvedStake,
+        stakeMode: input.stakeMode ?? "manual",
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message.slice(0, 200)
+          : "Unable to persist trade intent.";
+      if (attempts.length === 0) {
+        return {
+          ok: false,
+          code: "persist_failed",
+          reason: message,
+          decision,
+        };
+      }
+      break;
+    }
+
+    if (!persisted.ok) {
+      lastRiskFail = {
+        code: persisted.code,
+        reason: persisted.reason,
+        decision,
+      };
+      if (!fillSlots) {
+        return {
+          ok: false,
+          code: persisted.code,
+          reason: persisted.reason,
+          decision,
+        };
+      }
+      if (
+        DAY_HALT_CODES.has(persisted.code) ||
+        SLOT_EXHAUSTED_CODES.has(persisted.code)
+      ) {
+        if (attempts.length === 0) {
+          return {
+            ok: false,
+            code: persisted.code,
+            reason: persisted.reason,
+            decision,
+            marketScan,
+          };
+        }
+        break;
+      }
+      continue;
+    }
+
+    const tradeId = tradeIdFromPersisted(persisted.trade);
+    if (!tradeId) {
+      if (attempts.length === 0) {
+        return {
+          ok: false,
+          code: "missing_trade_id",
+          reason: "Persisted trade row did not include an id.",
+          userId: persisted.userId,
+          decision,
+        };
+      }
+      break;
+    }
+
+    const execution = await deps.executePersisted({
       config: input.config,
       identity: input.identity,
-      decision,
-      stake: resolvedStake,
+      tradeId,
+      liveExecutionRequested: input.liveExecutionRequested === true,
     });
-  } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message.slice(0, 200)
-        : "Unable to persist trade intent.";
-    return {
-      ok: false,
-      code: "persist_failed",
-      reason: message,
+
+    userId = persisted.userId;
+    attempts.push({
+      marketId: decision.marketId,
+      asset: decision.asset,
+      direction: String(decision.direction),
+      stake: persisted.intent.stake,
+      limitPriceHint: decision.limitPriceHint,
+      tradeId,
+      intentSymbol: persisted.intent.symbol,
       decision,
-    };
+      execution,
+      ok: execution.ok,
+      code: execution.ok ? undefined : execution.code,
+      reasonDetail: execution.ok ? undefined : execution.reason,
+    });
   }
 
-  if (!persisted.ok) {
-    return {
-      ok: false,
-      code: persisted.code,
-      reason: persisted.reason,
-      decision,
-    };
+  marketScan.selected = attempts.length;
+
+  if (attempts.length === 0) {
+    if (lastRiskFail) {
+      return {
+        ok: false,
+        code: lastRiskFail.code,
+        reason: lastRiskFail.reason,
+        decision: lastRiskFail.decision,
+        marketScan,
+      };
+    }
+    return emptyScanSuccess(ranked[0]!, marketScan);
   }
 
-  const tradeId = tradeIdFromPersisted(persisted.trade);
-  if (!tradeId) {
-    return {
-      ok: false,
-      code: "missing_trade_id",
-      reason: "Persisted trade row did not include an id.",
-      userId: persisted.userId,
-      decision,
-    };
-  }
-
-  const execution = await deps.executePersisted({
-    config: input.config,
-    identity: input.identity,
-    tradeId,
-    liveExecutionRequested: input.liveExecutionRequested === true,
-  });
-
-  const singleAttempt: CandidateTradeAttempt = {
-    marketId: decision.marketId,
-    asset: decision.asset,
-    direction: String(decision.direction),
-    stake: persisted.intent.stake,
-    limitPriceHint: decision.limitPriceHint,
-    tradeId,
-    intentSymbol: persisted.intent.symbol,
-    decision,
-    execution,
-    ok: execution.ok,
-    code: execution.ok ? undefined : execution.code,
-    reasonDetail: execution.ok ? undefined : execution.reason,
-  };
-
+  const first = attempts[0]!;
   return {
     ok: true,
-    userId: persisted.userId,
-    tradeId,
-    decision,
-    intentSymbol: persisted.intent.symbol,
-    stake: persisted.intent.stake,
-    execution,
+    userId,
+    tradeId: first.tradeId ?? "",
+    decision: first.decision ?? ranked[0]!,
+    intentSymbol: first.intentSymbol ?? "",
+    stake: first.stake,
+    execution: first.execution ?? {
+      ok: false,
+      code: "missing_execution",
+      reason: "Trade attempt had no execution result.",
+    },
     marketScan,
-    trades: [singleAttempt],
+    trades: attempts,
   };
 }

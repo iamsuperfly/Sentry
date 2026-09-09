@@ -68,6 +68,8 @@ test("builds the autonomous trade input with exclusions and identity", () => {
     first_name: "trader",
   });
   assert.equal(input.liveExecutionRequested, true);
-  assert.equal(input.stake, 3);
+  assert.equal(input.stakeMode, "adaptive");
+  assert.equal(input.fillAvailableSlots, true);
+  assert.equal(input.stake, undefined);
   assert.strictEqual(input.excludeMarketIds, excludedMarketIds);
 });

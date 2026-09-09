@@ -24,30 +24,8 @@ export function formatMultiTradeReply(input: {
   explorerTxBaseUrl: string;
 }): string {
   void input.executionMode;
-  const attempts =
-    input.trades.length > 0
-      ? input.trades
-      : [
-          {
-            marketId: input.fallback.decision.marketId,
-            asset: input.fallback.decision.asset,
-            direction: String(input.fallback.decision.direction ?? "n/a"),
-            stake: input.fallback.stake,
-            limitPriceHint: input.fallback.decision.limitPriceHint,
-            tradeId: input.fallback.tradeId,
-            intentSymbol: input.fallback.intentSymbol,
-            decision: input.fallback.decision,
-            execution: input.fallback.execution,
-            ok: input.fallback.execution.ok,
-            code: input.fallback.execution.ok
-              ? undefined
-              : input.fallback.execution.code,
-            reasonDetail: input.fallback.execution.ok
-              ? undefined
-              : input.fallback.execution.reason,
-          },
-        ];
-
+  void input.marketsLine;
+  const attempts = input.trades;
   const tradeBlocks: string[] = [];
   for (let i = 0; i < attempts.length; i++) {
     const a = attempts[i]!;
@@ -87,6 +65,7 @@ export function formatMultiTradeReply(input: {
     );
   }
 
-  const lines = [`Trades: ${attempts.length}`, "", ...tradeBlocks];
+  const lines = [`Trades: ${attempts.length}`];
+  if (tradeBlocks.length > 0) lines.push("", ...tradeBlocks);
   return lines.join("\n");
 }

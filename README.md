@@ -2,90 +2,65 @@
 
 Telegram trading assistant for **DreamDEX Event Contracts** on **Somnia Shannon testnet** (chain ID `50312`).
 
-Sentry gives a user a dedicated testnet wallet, scans live BTC/ETH Up/Down markets, and can place IOC trades either on demand or on a 6-minute autonomous loop. Groq ranks longer-duration markets; a Binance public-spot sampler feeds rolling features and the 1-minute strategy. Deterministic risk, sizing, and book checks always sit between the model and the order.
+Sentry creates a per-user testnet wallet, discovers live BTC/ETH Up/Down markets, and places IOC trades either on demand or on a 6-minute autonomous loop. Every live decision is deterministic. There is no LLM on the trading path.
 
-Built for the Somnia × DreamDEX Event Contracts hackathon. The product is a testnet trading assistant, not a research notebook.
+**[@dreamsentrybot](https://t.me/dreamsentrybot)** — Shannon testnet only. Not intended for real funds.
 
-## Live bot
+## What it does
 
-**[@dreamsentrybot](https://t.me/dreamsentrybot)** — [https://t.me/dreamsentrybot](https://t.me/dreamsentrybot)
+1. Onboard a dedicated wallet (STT gas sponsor + daily tUSDC faucet).
+2. Discover tradable BTC/ETH Event Contracts via `@somnia-chain/markets-sdk` `0.29.0`.
+3. Apply timing gates, then pick **one** market (nearest expiry among ENTERs). Each autonomous scan reports `Trades: 1` because it executes that single selected ENTER — not because discovery only found one market.
+4. Decide YES/NO from the book (5m/15m+) or a Binance five-print vote (1m).
+5. Size the stake, run risk checks, submit an IOC order.
+6. Manage, settle, and claim.
 
-Shannon testnet only. Not intended for real funds.
+## Trading pipeline
 
-## Overview
+```text
+DreamDEX listing (live binaries, limit 100)
+  → BTC/ETH + tradable + timing eligibility
+  → rank ENTER candidates by least time remaining
+  → direction
+       ├─ 1m: five Binance sampler prints, four adjacent moves
+       └─ 5m / 15m+: edge-taker-v1 (fair 0.50, edge 0.08)
+  → entry/limit price from the book
+  → stake
+       ├─ manual /trade: user defaultStake
+       └─ autonomous: adaptive fraction of maxTradeStake from entry vs 0.50
+  → evaluateRisk (min/max, daily loss, open slots, collateral)
+  → IOC execution
+  → positions / early-loss exit / settlement / claim
+```
 
-DreamDEX Event Contracts are short-dated binary Up/Down markets on BTC and ETH. Traders need a wallet, gas, collateral, a way to read the book, and a way to claim after settlement.
+### Timing
+- **1m:** `left >= 30s`
+- **5m:** `left >= 120s`
+- **15m+:** `left >= 300s`
 
-Sentry handles that loop in Telegram:
+### 1m Binance vote
+Sampler (~15s REST, no API key) keeps rolling prints. Five usable prices → four UP/DOWN moves. 3–1 follows; 2–2 skips; 4–0 fades. A flat tick or fewer than five prints skips. Fail closed.
 
-1. Create and fund a per-user wallet.
-2. Scan tradable BTC/ETH markets.
-3. Decide Up/Down (1m rule or Groq).
-4. Size, risk-check, and submit an IOC order.
-5. Notify, manage, settle, and claim.
+### 5m / 15m+
+Order-book edge-taker: YES ask ≤ 0.42 → YES; else NO ask ≤ 0.42 → NO; else YES ask ≥ 0.58 → NO; else skip.
+
+### Stake
+- **Manual** TRADE NOW / `/trade`: `defaultStake` (e.g. 30 tUSDC).
+- **Autonomous:** after the entry price is known, `edge = 0.50 − entryPrice`, band `0.50 + edge` into 25/30/40/60/80% of `maxTradeStake`, then clip through `evaluateRisk`. Example with max 50: 12.5 / 15 / 20 / 30 / 40 tUSDC.
+
+Risk always applies: min/max stake, daily loss, max open positions, collateral, book preflight. `ENABLE_LIVE_EXECUTION` must be true for chain writes.
 
 ## Features
 
-- **Telegram onboarding** — dedicated wallet, STT gas sponsor, daily tUSDC faucet (UTC day)
-- **BTC / ETH Event Contracts** — Up (YES) / Down (NO) via `@somnia-chain/markets-sdk` `0.28.1`
-- **Manual trading** — TRADE NOW or `/trade` runs one scan
-- **Autonomous trading** — optional 6-minute loop using the same pipeline, plus auto-claim and early-loss management. Pauses at UTC midnight until TRADE NOW or `/auto on`
-- **Groq decision layer** — 5m and 15m+ markets. Groq picks direction + confidence + reason only
-- **Binance sampler** — independent ~15s REST ticker for BTC/ETH, bounded rolling cache, heartbeat logs. No Binance API key
-- **Rolling features** — duration-aware 1/3/5/10/15/30m moves, trend, volatility, signed gap vs DreamDEX opening/reference
-- **1m strategy** — cache-first Binance spot ±0.05% in the final window; live ticker only if the cache is empty or stale. 1m never goes to Groq
-- **Deterministic validation** — Groq candidates are filtered against tradability, expiry, book, and slot/budget caps
-- **Adaptive stake** — live size from remaining daily-loss budget, book notional, and user/system ceilings. Groq stake is not authoritative
-- **Risk controls** — user + system min/max stake, max open positions, daily loss stop, daily profit target
-- **Early-loss management** — open positions can be closed early to limit a loss (reported as CLOSED EARLY)
-- **Claims / settlement** — reconstruct PnL from on-chain `winningOutcome` + filled contracts; `/claim` redeems winning or void ERC-6909 balances
-- **Notifications** — trade updates, finalization, claims, autonomous daily halt. Zero-fill IOC already reported as “Not filled” is not duplicated as “Trade closed”
-- **Positions, history, performance, leaderboard** — reconstructed win/loss PnL, UTC-day and all-time stats
-
-Primary UX is buttons (TRADE NOW, AUTONOMOUS, POSITIONS, PERFORMANCE, WALLET, HELP). Legacy commands (`/trade`, `/auto`, `/settings`, `/faucet`, `/status`, `/positions`, `/history`, `/claim`, `/leaderboard`, `/fund`, `/privatekey`) still work. `/stop` only pauses autonomous trading.
-
-## Architecture
-
-```text
-Binance public ticker (independent ~15s sampler)
-  → rolling in-memory features
-  → market discovery (DreamDEX SDK)
-       ├─ 1m final window → cache-first spot ±0.05% rule
-       └─ 5m / 15m+     → Groq rank + compact features
-  → deterministic AI validation
-  → adaptive stake + user/system risk
-  → DreamDEX order-book preflight
-  → independent IOC execution
-  → Supabase persistence
-  → Telegram notifications
-```
-
-**Manual TRADE NOW / `/trade`** runs that pipeline once.
-
-**Autonomous mode** repeats it every 6 minutes for opted-in users, then runs early-loss management and a claim scan. It shares the same execution, risk, and persistence code. It stops at UTC midnight until the user trades again or turns autonomous back on.
-
-Groq cannot bypass stake limits, slot caps, daily loss/profit stops, book preflight, or `ENABLE_LIVE_EXECUTION`. Missing `GROQ_API_KEY` fails closed (`ai_not_configured`). There is no hardcoded strategy fallback when AI fails.
-
-Settlement PnL is reconstructed from on-chain outcome + filled contracts. Claiming converts a 6909 balance into tUSDC; it does not invent extra PnL.
-
-## Technology stack
-
-| Layer | Technology |
-| --- | --- |
-| Runtime | Node.js 24, TypeScript 5.9, pnpm workspaces |
-| Telegram | grammY |
-| HTTP diagnostics | Express 5 (`/api/healthz`, `/api/readyz`, read-only DreamDEX routes) |
-| Persistence | Supabase (Postgres + SQL migrations in `supabase/migrations`) |
-| Chain | viem, `@somnia-chain/markets-sdk` `0.28.1` |
-| AI | Groq OpenAI-compatible Chat Completions (`openai/gpt-oss-20b`) |
-| Spot data | Binance public ticker (no API key) |
-| Validation | Zod |
-| Logging | pino |
-| Deploy | Railway (`railway.json`); Replit-compatible scripts |
+- Telegram buttons: TRADE NOW, AUTONOMOUS, POSITIONS, PERFORMANCE, WALLET, HELP
+- Commands: `/trade`, `/auto`, `/settings`, `/faucet`, `/status`, `/positions`, `/history`, `/claim`, `/leaderboard`, `/fund`, `/privatekey`. `/stop` pauses autonomous only
+- Autonomous 6-minute scan (one ENTER per scan) + early-loss management + claim sweep. Pauses at UTC midnight until TRADE NOW or `/auto on`
+- IOC execution, partial fills, zero-fill quieting
+- Settlement PnL from on-chain `winningOutcome` + filled contracts; `/claim` redeems win/void ERC-6909 balances as tUSDC
 
 ## Setup
 
-Shannon testnet only. Apply Supabase migrations in order under `supabase/migrations/` (through `0010_utc_day_drop_user_timezone.sql`). Copy `.env.example` and fill secrets locally — never commit a real `.env`.
+Shannon only. Apply `supabase/migrations/` in order. Copy `.env.example` — never commit a real `.env`.
 
 ```bash
 pnpm --filter @workspace/api-server run dev
@@ -94,92 +69,37 @@ pnpm run build
 pnpm --filter @workspace/api-server run test
 ```
 
-Default API port is `5000`.
+Default API port is `5000`. Deploy is Railway (`railway.json`).
 
 ### Environment
 
-Required:
+Required: `TELEGRAM_BOT_TOKEN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `TREASURY_PRIVATE_KEY`, `WALLET_ENCRYPTION_KEY`.
 
-```text
-TELEGRAM_BOT_TOKEN
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-TREASURY_PRIVATE_KEY
-WALLET_ENCRYPTION_KEY
-```
+Network defaults point at Shannon (`SOMNIA_RPC_URL`, `SOMNIA_WS_RPC_URL`, `DREAMDEX_INDEXER_URL`, `EXPLORER_TX_BASE_URL`, `INITIAL_GAS_SPONSOR_AMOUNT`, `PORT`).
 
-Network (defaults point at Shannon):
+Trading: `ENABLE_LIVE_EXECUTION=true` for real orders (default false).
 
-```text
-SOMNIA_RPC_URL              # default https://dream-rpc.somnia.network
-SOMNIA_WS_RPC_URL
-DREAMDEX_INDEXER_URL
-EXPLORER_TX_BASE_URL
-INITIAL_GAS_SPONSOR_AMOUNT  # default 0.1 STT
-PORT                        # default 5000
-```
+Optional ceilings: `SYSTEM_MIN_STAKE_TUSDC`, `SYSTEM_MAX_STAKE_TUSDC`, `SYSTEM_MAX_OPEN_POSITIONS`, `SYSTEM_MAX_DAILY_LOSS_TUSDC` (code defaults 1 / 200 / 10 / 300).
 
-Trading / AI:
+No Binance API key. No Groq/LLM key.
 
-```text
-ENABLE_LIVE_EXECUTION=true     # required for real Shannon orders (default false)
-GROQ_API_KEY
-GROQ_MODEL=openai/gpt-oss-20b  # optional
-GROQ_BASE_URL                  # optional, default https://api.groq.com/openai/v1
-GROQ_MAX_MARKETS=8             # optional cap on markets sent to Groq
-```
+## Diagnostics HTTP
 
-Optional system ceilings (code defaults: min stake 1, max stake 200, max open **10**, max daily loss **300** tUSDC):
-
-```text
-SYSTEM_MIN_STAKE_TUSDC
-SYSTEM_MAX_STAKE_TUSDC
-SYSTEM_MAX_OPEN_POSITIONS
-SYSTEM_MAX_DAILY_LOSS_TUSDC
-```
-
-No Binance API key. Do not commit secrets.
-
-### Diagnostics HTTP
-
-```text
-GET /api/healthz
-GET /api/readyz
-GET /api/dreamdex/markets
-GET /api/dreamdex/decisions
-```
-
-Read-only. Telegram trading does not go through these routes.
-
-## Project structure
-
-```text
-artifacts/api-server/     Telegram bot + trading engine
-  src/index.ts            process entry (HTTP + bot)
-  src/config.ts           environment
-  src/telegram/           grammY bot, keyboards, autonomous/finalization loops
-  src/lib/                strategy, Groq, Binance sampler, risk, execution, persistence
-  src/routes/             health / readiness / read-only DreamDEX diagnostics
-supabase/migrations/      ordered SQL schema
-docs/                     architecture notes
-LICENSE                   MIT
-```
+Read-only: `GET /api/healthz`, `/api/readyz`, `/api/dreamdex/markets`, `/api/dreamdex/decisions`. Telegram trading does not use these.
 
 ## Network
 
 - RPC: `https://dream-rpc.somnia.network`
 - Explorer: `https://shannon-explorer.somnia.network`
 - tUSDC: `0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E`
-- Shared OutcomeToken6909: `0xB52c5934113Af5c0Bb20eb3C72290C8215f755b9`
+- OutcomeToken6909: `0xB52c5934113Af5c0Bb20eb3C72290C8215f755b9`
 
-## Testnet / safety
+Event contracts can go to zero. IOC orders may not fill. Autonomous mode keeps scanning until a daily halt, a position cap, or you pause it.
 
-Sentry currently operates on **Somnia Shannon testnet only**. It is **not** intended for real funds.
+## Stack
 
-Event contracts can go to zero. IOC orders may not fill. Autonomous mode will keep trading until a daily halt, a position cap, or you pause it. Past results are not a forecast. You are responsible for keys, secrets, and any funds you put on the bot.
-
-Live chain submit stays gated by `ENABLE_LIVE_EXECUTION`.
+Node 24, TypeScript 5.9, pnpm, grammY, Express, Supabase, viem, `@somnia-chain/markets-sdk` `0.29.0`, Zod, pino.
 
 ## License
 
-MIT © 2026 Superfly. See [LICENSE](LICENSE).
+MIT — Copyright (c) 2026 Superfly

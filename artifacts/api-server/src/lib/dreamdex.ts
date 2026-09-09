@@ -171,28 +171,15 @@ export async function readDreamdexMarkets(
         : undefined,
       limit: MARKET_LIMIT,
     };
-    // Prefer live listing when available (SDK 0.28.1); fall back to general binary list.
-    let listingApi = "listBinaryMarkets";
+    let listingApi = "listLiveBinaryMarkets";
     let markets: Awaited<
-      ReturnType<typeof exchange.client.listBinaryMarkets>
+      ReturnType<typeof exchange.client.listLiveBinaryMarkets>
     >;
-    const liveFn = (
-      exchange.client as {
-        listLiveBinaryMarkets?: (opts: typeof listOpts) => Promise<
-          Awaited<ReturnType<typeof exchange.client.listBinaryMarkets>>
-        >;
-      }
-    ).listLiveBinaryMarkets;
-    if (typeof liveFn === "function") {
-      try {
-        markets = await liveFn.call(exchange.client, listOpts);
-        listingApi = "listLiveBinaryMarkets";
-      } catch {
-        markets = await exchange.client.listBinaryMarkets(listOpts);
-        listingApi = "listBinaryMarkets";
-      }
-    } else {
+    try {
+      markets = await exchange.client.listLiveBinaryMarkets(listOpts);
+    } catch {
       markets = await exchange.client.listBinaryMarkets(listOpts);
+      listingApi = "listBinaryMarkets";
     }
     const supportedMarkets = markets.filter((market) =>
       SUPPORTED_ASSETS.has(market.asset.toUpperCase()),

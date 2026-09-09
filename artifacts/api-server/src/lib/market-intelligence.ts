@@ -97,7 +97,6 @@ export function summarizeMarketIntelligence(
 
 export function formatScanSummaryLines(
   s: MarketIntelligenceSummary & {
-    aiCandidates?: number;
     availableSlots?: number;
     selected?: number;
   },
@@ -108,7 +107,6 @@ export function formatScanSummaryLines(
     `Tradable: ${s.tradable} · With usable asks: ${s.withUsableAsks}`,
     `Durations (all): 1m=${s.byDuration["1m"]} 5m=${s.byDuration["5m"]} 15m=${s.byDuration["15m"]} 1h=${s.byDuration["1h"]} 4h=${s.byDuration["4h"]} 1d=${s.byDuration["1d"]} other=${s.byDuration.unknown}`,
   ];
-  if (s.aiCandidates !== undefined) lines.push(`AI candidates: ${s.aiCandidates}`);
   if (s.availableSlots !== undefined)
     lines.push(`Available position slots: ${s.availableSlots}`);
   if (s.selected !== undefined) lines.push(`Selected: ${s.selected}`);
