@@ -25,6 +25,7 @@ import { decryptPrivateKey, encryptPrivateKey } from "../lib/wallet-crypto";
 import { runTelegramTradeCycle } from "../lib/trade-orchestration";
 import { startAutonomousLoop } from "../lib/autonomous-loop";
 import { startBinanceSampler, stopBinanceSampler } from "../lib/binance-sampler";
+import { startProtocolEventBus } from "../lib/protocol-events";
 
 import {
   applySettingsPatch,
@@ -637,7 +638,7 @@ export function createTelegramBot(config: AppConfig): Bot {
           "",
           `Faucet today: ${allowance.consumed} / 500 tUSDC`,
           `Remaining: ${allowance.remaining} tUSDC`,
-          "Allowance resets at your local midnight.",
+          "Allowance resets at 00:00 UTC.",
         ].join("\n"),
       );
     } catch (error) {
@@ -687,6 +688,10 @@ export function startTelegramBot(config: AppConfig): Bot {
   startBinanceSampler();
   const finalization = startFinalizationLoop(bot, config);
   const autonomous = startAutonomousLoop(bot, config);
+  const protocolEvents = startProtocolEventBus(config, {
+    onLifecycle: () => finalization.requestTick(),
+    onTradingOpportunity: () => autonomous.requestTick(0),
+  });
   void bot
     .start({
       onStart: (info) =>
@@ -700,6 +705,7 @@ export function startTelegramBot(config: AppConfig): Bot {
     stopBinanceSampler();
     finalization.stop();
     autonomous.stop();
+    protocolEvents.stop();
     return originalStop(...args);
   };
   return bot;

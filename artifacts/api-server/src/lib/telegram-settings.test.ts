@@ -60,6 +60,21 @@ describe("parseSettingsCommand", () => {
     const e = parseSettingsCommand("foo 1");
     assert.equal(e.kind, "error");
   });
+
+  it("parses custom adaptive bands and reset to system defaults", () => {
+    const custom = parseSettingsCommand(
+      "adaptive 0.55:25 0.65:30 0.75:40 0.85:60 80",
+    );
+    assert.equal(custom.kind, "patch");
+    if (custom.kind === "patch") {
+      assert.equal(custom.patch.adaptiveStakeBands?.length, 5);
+      assert.equal(custom.patch.adaptiveStakeBands?.[0]?.fraction, 0.25);
+      assert.equal(custom.patch.adaptiveStakeBands?.[4]?.maxStrength, null);
+    }
+    const reset = parseSettingsCommand("adaptive reset");
+    assert.equal(reset.kind, "patch");
+    if (reset.kind === "patch") assert.equal(reset.patch.adaptiveStakeBands, null);
+  });
 });
 
 describe("applySettingsPatch", () => {
@@ -124,5 +139,14 @@ describe("formatSettingsHelp", () => {
     assert.doesNotMatch(help, /timezone/i);
     assert.doesNotMatch(help, /max_stake/);
     assert.doesNotMatch(help, /executionMode/);
+  });
+
+  it("does not expose POST_ONLY or strategy settings", () => {
+    const help = formatSettingsHelp(DEFAULT_SYSTEM_LIMITS);
+    assert.doesNotMatch(help, /POST_ONLY/i);
+    assert.doesNotMatch(help, /maker/i);
+    assert.match(help, /adaptive/);
+    const unknown = parseSettingsCommand("post_only on");
+    assert.equal(unknown.kind, "error");
   });
 });

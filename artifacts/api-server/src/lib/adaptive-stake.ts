@@ -5,6 +5,101 @@
 
 export const BINARY_FAIR_MIDPOINT = 0.5;
 
+export type AdaptiveStakeBand = {
+  /** Exclusive upper bound on strength. Null = remaining values (highest band). */
+  maxStrength: number | null;
+  fraction: number;
+};
+
+/**
+ * System defaults — the live engine's existing bands.
+ * Users inherit these until they save a custom list.
+ */
+export const DEFAULT_ADAPTIVE_STAKE_BANDS: readonly AdaptiveStakeBand[] = [
+  { maxStrength: 0.55, fraction: 0.25 },
+  { maxStrength: 0.65, fraction: 0.3 },
+  { maxStrength: 0.75, fraction: 0.4 },
+  { maxStrength: 0.85, fraction: 0.6 },
+  { maxStrength: null, fraction: 0.8 },
+];
+
+export function cloneDefaultAdaptiveStakeBands(): AdaptiveStakeBand[] {
+  return DEFAULT_ADAPTIVE_STAKE_BANDS.map((band) => ({ ...band }));
+}
+
+export function resolveAdaptiveStakeBands(
+  custom: readonly AdaptiveStakeBand[] | null | undefined,
+): AdaptiveStakeBand[] {
+  if (!custom || custom.length === 0) return cloneDefaultAdaptiveStakeBands();
+  return custom.map((band) => ({
+    maxStrength: band.maxStrength,
+    fraction: band.fraction,
+  }));
+}
+
+export function parseAdaptiveStakeBands(
+  raw: unknown,
+): AdaptiveStakeBand[] | null {
+  if (raw === null || raw === undefined) return null;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const bands: AdaptiveStakeBand[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") return null;
+    const row = item as Record<string, unknown>;
+    const fraction = Number(row.fraction);
+    if (!Number.isFinite(fraction) || fraction <= 0 || fraction > 1) return null;
+    let maxStrength: number | null = null;
+    if (row.maxStrength !== null && row.maxStrength !== undefined) {
+      const n = Number(row.maxStrength);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      maxStrength = n;
+    }
+    bands.push({ maxStrength, fraction });
+  }
+  const last = bands[bands.length - 1];
+  if (!last || last.maxStrength !== null) return null;
+  return bands;
+}
+
+export function validateAdaptiveStakeBands(
+  bands: readonly AdaptiveStakeBand[],
+): { ok: true } | { ok: false; code: string; reason: string } {
+  if (!bands.length) {
+    return { ok: false, code: "invalid_adaptive_bands", reason: "Adaptive bands cannot be empty." };
+  }
+  let previous = 0;
+  for (let i = 0; i < bands.length; i++) {
+    const band = bands[i]!;
+    if (!Number.isFinite(band.fraction) || band.fraction <= 0 || band.fraction > 1) {
+      return {
+        ok: false,
+        code: "invalid_adaptive_bands",
+        reason: "Each adaptive fraction must be in (0, 1].",
+      };
+    }
+    const isLast = i === bands.length - 1;
+    if (isLast) {
+      if (band.maxStrength !== null) {
+        return {
+          ok: false,
+          code: "invalid_adaptive_bands",
+          reason: "The last adaptive band must be unbounded.",
+        };
+      }
+      continue;
+    }
+    if (band.maxStrength === null || !(band.maxStrength > previous)) {
+      return {
+        ok: false,
+        code: "invalid_adaptive_bands",
+        reason: "Adaptive strength bounds must increase and the last band must be open.",
+      };
+    }
+    previous = band.maxStrength;
+  }
+  return { ok: true };
+}
+
 function floorStake(value: number): number {
   return Math.floor(value * 100) / 100;
 }
@@ -26,16 +121,20 @@ export function stakeStrengthFromEdge(edge: number): number {
 }
 
 /**
- * Fraction of maxTradeStake.
- * <0.55 → 25%; 0.55–0.64 → 30%; 0.65–0.74 → 40%; 0.75–0.84 → 60%; ≥0.85 → 80%.
+ * Fraction of maxTradeStake using the supplied (or system-default) bands.
  */
-export function stakeFractionFromStrength(strength: number): number {
-  if (!Number.isFinite(strength)) return 0.25;
-  if (strength < 0.55) return 0.25;
-  if (strength < 0.65) return 0.3;
-  if (strength < 0.75) return 0.4;
-  if (strength < 0.85) return 0.6;
-  return 0.8;
+export function stakeFractionFromStrength(
+  strength: number,
+  bands: readonly AdaptiveStakeBand[] | null | undefined = DEFAULT_ADAPTIVE_STAKE_BANDS,
+): number {
+  const resolved = resolveAdaptiveStakeBands(bands);
+  if (!Number.isFinite(strength)) return resolved[0]?.fraction ?? 0.25;
+  for (const band of resolved) {
+    if (band.maxStrength === null || strength < band.maxStrength) {
+      return band.fraction;
+    }
+  }
+  return resolved[resolved.length - 1]?.fraction ?? 0.25;
 }
 
 export function remainingDailyLossBudget(input: {
@@ -79,6 +178,7 @@ export type AdaptiveStakeFromEntryInput = {
   remainingBudget: number;
   collateralBalance?: number | null;
   askNotional?: number | null;
+  bands?: readonly AdaptiveStakeBand[] | null;
 };
 
 export type AdaptiveStakeFromEntryResult =
@@ -104,7 +204,7 @@ export function sizeAdaptiveStakeFromEntry(
   }
 
   const strength = stakeStrengthFromEdge(edge);
-  const fraction = stakeFractionFromStrength(strength);
+  const fraction = stakeFractionFromStrength(strength, input.bands);
 
   const cap = Math.min(
     input.maxTradeStake,

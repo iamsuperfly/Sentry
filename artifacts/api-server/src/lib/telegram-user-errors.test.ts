@@ -78,6 +78,7 @@ describe("human trade errors", () => {
       reason: "rpc readContract balanceOf failed",
     });
     assert.match(rpc, /Network or allowance/);
+    assert.match(rpc, /@iamsuperflly/);
     assert.doesNotMatch(rpc, /readContract/);
   });
 
@@ -85,5 +86,20 @@ describe("human trade errors", () => {
     const note = sanitizeTechnicalErrorNote("ImmediateOrCancelNoFill()");
     assert.match(note ?? "", /Nothing was taken/);
     assert.doesNotMatch(note ?? "", /ImmediateOrCancelNoFill/);
+  });
+
+  it("does not leak Somnia unreachable/invariant text", () => {
+    const text = formatUserFacingTradeFailure({
+      code: "submission_error",
+      reason: "invariant violated: expected a value to be present",
+    });
+    assert.match(text, /Network or allowance/);
+    assert.match(text, /@iamsuperflly/);
+    assert.doesNotMatch(text, /invariant/);
+    assert.doesNotMatch(text, /unreachable/);
+    assert.equal(
+      sanitizeTechnicalErrorNote("unreachable: no external wallet client"),
+      "Network issue. Try again shortly.",
+    );
   });
 });

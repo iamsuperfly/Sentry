@@ -8,14 +8,11 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
-  SomniaMarkets,
   ORDER_TYPE,
-  type Trader,
 } from "@somnia-chain/markets-sdk";
 import {
   somniaShannon,
 } from "@somnia-chain/markets-sdk/chains";
-import { SOMNIA_TESTNET_ADDRESSES } from "@somnia-chain/markets-sdk";
 import type { AppConfig } from "../config.ts";
 import type { TradeIntent } from "./execution.ts";
 import type { PendingIntentMarketState } from "./trade-state.ts";
@@ -23,12 +20,17 @@ import {
   LiveBroadcastError,
   type ChainReadSnapshot,
   type ChainWriteResult,
-  type IocOrderDraft,
   type LiveExecutionDeps,
 } from "./live-execution.ts";
 import { claimPendingTrade, updateTradeExecution } from "./supabase.ts";
-import { evaluatePreflightBook, levelFromBookSide } from "./preflight-book.ts";
+import { evaluatePreflightBook, levelFromBookSide, type PreflightBook } from "./preflight-book.ts";
 import { logger } from "./logger.ts";
+import { looksLikeInsufficientGas, looksLikePostOnlyWouldCross } from "./insufficient-gas.ts";
+import { replenishUserSttGas } from "./gas-replenish.ts";
+import { rememberWindow } from "./market-window.ts";
+import { getSharedSomniaExchange, withUserWriteSession } from "./somnia-client.ts";
+import { classifySdkFailure } from "./sdk-failure.ts";
+import { postOnlyWouldCross } from "./post-only-order.ts";
 
 const erc20Abi = [
   {
@@ -43,15 +45,6 @@ const erc20Abi = [
   },
 ] as const;
 
-function exchange(config: AppConfig) {
-  return new SomniaMarkets({
-    chain: somniaShannon,
-    wsRpcUrl: config.wsRpcUrl,
-    indexerUrl: config.dreamdexIndexerUrl,
-    addresses: SOMNIA_TESTNET_ADDRESSES,
-  });
-}
-
 function rawToHuman(raw: bigint, decimals: number): number {
   return Number(raw) / 10 ** decimals;
 }
@@ -60,44 +53,50 @@ function address(value: string): Address {
   return value as Address;
 }
 
-function errorHash(error: unknown): string | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const record = error as Record<string, unknown>;
-  for (const key of ["hash", "transactionHash", "txHash"]) {
-    if (typeof record[key] === "string") return record[key];
+function toBroadcastError(
+  error: unknown,
+  operation: string,
+  context?: Record<string, unknown>,
+): LiveBroadcastError {
+  const classified = classifySdkFailure(error, operation);
+  logger.error(
+    {
+      operation: classified.operation,
+      sdkName: classified.name,
+      err: classified.message,
+      hash: classified.hash,
+      broadcastState: classified.broadcastState,
+      ...context,
+    },
+    "Somnia/DreamDEX SDK call failed",
+  );
+  if (looksLikeInsufficientGas(classified.name, classified.message)) {
+    return new LiveBroadcastError(
+      classified.message,
+      "confirmed_failure",
+      classified.hash,
+    );
   }
-  return undefined;
-}
-
-function toBroadcastError(error: unknown, operation: string): LiveBroadcastError {
-  const hash = errorHash(error);
-  const message =
-    error instanceof Error ? error.message.slice(0, 240) : `${operation} failed`;
-  const name =
-    error && typeof error === "object" && "name" in error
-      ? String((error as { name: unknown }).name)
-      : "";
-  const confirmed = /revert|contractrevert|execution reverted/i.test(
-    `${name} ${message}`,
-  );
+  if (looksLikePostOnlyWouldCross(classified.name, classified.message)) {
+    return new LiveBroadcastError(
+      classified.message,
+      "confirmed_failure",
+      classified.hash,
+    );
+  }
   return new LiveBroadcastError(
-    message,
-    confirmed ? "confirmed_failure" : hash ? "uncertain" : "uncertain",
-    hash,
+    classified.message,
+    classified.broadcastState,
+    classified.hash,
   );
 }
 
-async function makeTrader(config: AppConfig, privateKey: string): Promise<{
-  trader: Trader;
-  account: ReturnType<typeof privateKeyToAccount>;
-}> {
-  const account = privateKeyToAccount(privateKey as Hex);
-  const client = exchange(config);
-  return { trader: client.client.createTrader({ privateKey: privateKey as Hex }), account };
-}
-
-async function readBook(config: AppConfig, poolAddress: string, decimals: number) {
-  const client = exchange(config).client;
+async function readBookSnapshot(
+  config: AppConfig,
+  poolAddress: string,
+  decimals: number,
+): Promise<PreflightBook> {
+  const client = getSharedSomniaExchange(config).client;
   const book = await client.getBinaryOrderBook(address(poolAddress), {
     depth: 5,
     decimals,
@@ -118,9 +117,17 @@ export function createProductionLiveExecutionDeps(
 ): LiveExecutionDeps {
   return {
     readChain: async (intent: TradeIntent): Promise<ChainReadSnapshot> => {
-      const client = exchange(config).client;
+      const client = getSharedSomniaExchange(config).client;
       const market = await client.getMarketOnchain(intent.marketId as Hex);
       const params = await client.getBinaryBookParams(market.pool);
+      if (!params || params.tickSize <= 0n || params.lotSize <= 0n || params.minQuantity <= 0n) {
+        throw new Error("Pool tickSize, lotSize, and minQuantity are required.");
+      }
+      rememberWindow({
+        marketId: intent.marketId,
+        poolAddress: market.pool,
+        poolNonce: market.nonce === undefined || market.nonce === null ? "" : String(market.nonce),
+      });
       const [balance, allowance] = await Promise.all([
         client.getErc20Balance(market.collateral, address(intent.walletAddress)),
         client.getErc20Allowance(
@@ -138,6 +145,10 @@ export function createProductionLiveExecutionDeps(
           decimals: market.decimals,
           tickSize: rawToHuman(params.tickSize, market.decimals),
           lotSize: rawToHuman(params.lotSize, market.decimals),
+          minQuantity: rawToHuman(params.minQuantity, market.decimals),
+          tickSizeRaw: params.tickSize,
+          lotSizeRaw: params.lotSize,
+          minQuantityRaw: params.minQuantity,
           expirySec: Number(market.expiry),
         },
         tusdcBalance: rawToHuman(balance, market.decimals),
@@ -146,8 +157,10 @@ export function createProductionLiveExecutionDeps(
       };
     },
 
+    readBook: async (order) => readBookSnapshot(config, order.poolAddress, order.decimals),
+
     ensureAllowance: async ({ privateKey, collateral, pool, amount, decimals }) => {
-      const { account } = await makeTrader(config, privateKey);
+      const account = privateKeyToAccount(privateKey as Hex);
       const publicClient = createPublicClient({
         chain: somniaShannon,
         transport: http(config.rpcUrl),
@@ -167,7 +180,11 @@ export function createProductionLiveExecutionDeps(
         await publicClient.waitForTransactionReceipt({ hash });
         return hash;
       } catch (error) {
-        throw toBroadcastError(error, "Collateral approval");
+        throw toBroadcastError(error, "Collateral approval", {
+          walletAddress: account.address,
+          pool,
+          collateral,
+        });
       }
     },
 
@@ -175,20 +192,24 @@ export function createProductionLiveExecutionDeps(
       privateKey,
       order,
     }): Promise<ChainWriteResult> => {
-      let fresh;
+      let fresh: PreflightBook;
       try {
-        fresh = await readBook(config, order.poolAddress, order.decimals);
+        fresh = await readBookSnapshot(config, order.poolAddress, order.decimals);
       } catch (error) {
-        const message =
-          error instanceof Error ? error.message.slice(0, 200) : "Fresh book read failed.";
+        const classified = classifySdkFailure(error, "Pre-flight book read");
         logger.warn(
-          { marketId: order.marketId, err: message },
+          {
+            marketId: order.marketId,
+            operation: classified.operation,
+            sdkName: classified.name,
+            err: classified.message,
+          },
           "Pre-flight book read failed; skipping IOC",
         );
         return {
           filledContracts: 0,
           status: "failed",
-          errorMessage: message,
+          errorMessage: classified.message,
         };
       }
       const pre = evaluatePreflightBook({
@@ -217,38 +238,145 @@ export function createProductionLiveExecutionDeps(
         };
       }
 
-      const { trader } = await makeTrader(config, privateKey);
+      return withUserWriteSession(config, privateKey, async ({ trader, address: walletAddress }) => {
+        const decimals = order.decimals;
+        const price = parseUnits(String(order.limitPrice), decimals);
+        const quantity = parseUnits(String(order.contracts), decimals);
+        try {
+          const result = await trader.placeOrder({
+            pool: address(order.poolAddress),
+            side: order.outcome === "YES" ? "BUY_YES" : "BUY_NO",
+            price,
+            quantity,
+            orderType: ORDER_TYPE.MARKET,
+            expireTimestampNs: BigInt(order.expireAtSec) * 1_000_000_000n,
+            autoApprove: false,
+          });
+          const filled = result.fills.reduce(
+            (total, fill) => total + rawToHuman(fill.quantityFilled, decimals),
+            0,
+          );
+          return {
+            transactionHash: result.hash,
+            orderId: result.orderId?.toString(),
+            filledContracts: filled,
+            status:
+              filled <= 0
+                ? "failed"
+                : filled >= order.contracts
+                  ? "filled"
+                  : "partially_filled",
+          };
+        } catch (error) {
+          throw toBroadcastError(error, "IOC order", {
+            marketId: order.marketId,
+            poolAddress: order.poolAddress,
+            walletAddress,
+            outcome: order.outcome,
+            limitPrice: order.limitPrice,
+            contracts: order.contracts,
+          });
+        }
+      });
+    },
+
+    placePostOnlyOrder: async ({ privateKey, order }): Promise<ChainWriteResult> => {
       const decimals = order.decimals;
-      const price = parseUnits(String(order.limitPrice), decimals);
       const quantity = parseUnits(String(order.contracts), decimals);
+      if (quantity <= 0n) {
+        return {
+          filledContracts: 0,
+          status: "failed",
+          errorMessage: "POST_ONLY quantity snaps to zero; no order signed.",
+        };
+      }
+      let book: PreflightBook | null = null;
       try {
-        const result = await trader.placeOrder({
-          pool: address(order.poolAddress),
-          side: order.outcome === "YES" ? "BUY_YES" : "BUY_NO",
-          price,
-          quantity,
-          orderType: ORDER_TYPE.MARKET,
-          expireTimestampNs: BigInt(order.expireAtSec) * 1_000_000_000n,
-          autoApprove: false,
-        });
-        const filled = result.fills.reduce(
-          (total, fill) => total + rawToHuman(fill.quantityFilled, decimals),
-          0,
+        book = await readBookSnapshot(config, order.poolAddress, decimals);
+      } catch (error) {
+        const classified = classifySdkFailure(error, "POST_ONLY book read");
+        logger.warn(
+          {
+            marketId: order.marketId,
+            operation: classified.operation,
+            sdkName: classified.name,
+            err: classified.message,
+          },
+          "POST_ONLY book read failed; not signing",
         );
         return {
-          transactionHash: result.hash,
-          orderId: result.orderId?.toString(),
-          filledContracts: filled,
-          status:
-            filled <= 0
-              ? "failed"
-              : filled >= order.contracts
-                ? "filled"
-                : "partially_filled",
+          filledContracts: 0,
+          status: "failed",
+          errorMessage: classified.message,
         };
-      } catch (error) {
-        throw toBroadcastError(error, "IOC order");
       }
+      if (postOnlyWouldCross({
+        outcome: order.outcome,
+        limitPrice: order.limitPrice,
+        book,
+      })) {
+        return {
+          filledContracts: 0,
+          status: "failed",
+          errorMessage: `POST_ONLY would cross at limit ${order.limitPrice}.`,
+        };
+      }
+      return withUserWriteSession(config, privateKey, async ({ trader, address: walletAddress }) => {
+        const price = parseUnits(String(order.limitPrice), decimals);
+        try {
+          const result = await trader.placeOrder({
+            pool: address(order.poolAddress),
+            side: order.outcome === "YES" ? "BUY_YES" : "BUY_NO",
+            price,
+            quantity,
+            orderType: ORDER_TYPE.POST_ONLY,
+            expireTimestampNs: BigInt(order.expireAtSec) * 1_000_000_000n,
+            autoApprove: false,
+          });
+          const filled = result.fills.reduce(
+            (total, fill) => total + rawToHuman(fill.quantityFilled, decimals),
+            0,
+          );
+          if (filled <= 0 && result.orderId) {
+            return {
+              transactionHash: result.hash,
+              orderId: result.orderId.toString(),
+              filledContracts: 0,
+              status: "resting",
+            };
+          }
+          return {
+            transactionHash: result.hash,
+            orderId: result.orderId?.toString(),
+            filledContracts: filled,
+            status:
+              filled <= 0
+                ? "failed"
+                : filled >= order.contracts
+                  ? "filled"
+                  : "partially_filled",
+          };
+        } catch (error) {
+          throw toBroadcastError(error, "POST_ONLY order", {
+            marketId: order.marketId,
+            poolAddress: order.poolAddress,
+            walletAddress,
+            outcome: order.outcome,
+            limitPrice: order.limitPrice,
+            contracts: order.contracts,
+          });
+        }
+      });
+    },
+
+    replenishGas: async ({ userId, walletAddress }) => {
+      const result = await replenishUserSttGas({
+        config,
+        userId,
+        walletAddress,
+      });
+      if (!result.ok) return result;
+      return { ok: true, hash: result.hash };
     },
 
     claimTrade: ({ tradeId, userId }) =>
@@ -261,21 +389,14 @@ export async function readPendingMarketState(
   config: AppConfig,
   marketId: string,
 ): Promise<PendingIntentMarketState> {
-  const marketClient = exchange(config);
-  try {
-    const market = await marketClient.client.getMarketOnchain(marketId as Hex);
-    return {
-      marketId,
-      expiry: market.expiry.toString(),
-      indexerStatus: "Unknown",
-      onchainStatus: market.status,
-      tradable: market.status === 1,
-      finalized: market.finalized,
-    };
-  } finally {
-    await Promise.race([
-      marketClient.close(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-    ]);
-  }
+  const client = getSharedSomniaExchange(config).client;
+  const market = await client.getMarketOnchain(marketId as Hex);
+  return {
+    marketId,
+    expiry: market.expiry.toString(),
+    indexerStatus: "Unknown",
+    onchainStatus: market.status,
+    tradable: market.status === 1,
+    finalized: market.finalized,
+  };
 }

@@ -82,6 +82,7 @@ function market(
     decimals: 6,
     tickSize: 0.01,
     lotSize: 0.1,
+    minQuantity: 0.001,
     expirySec: 2_000_000_000,
     ...overrides,
   };
@@ -105,7 +106,7 @@ describe("protocol gates", () => {
     if (!r.ok) assert.equal(r.code, "market_not_trading");
   });
 
-  it("rejects invalid tick after snap", () => {
+  it("clamps sub-tick prices onto the venue grid instead of guessing", () => {
     const r = evaluateProtocolGates({
       intent: intent({ limitPrice: 0.004 }),
       market: market({ tickSize: 0.01 }),
@@ -113,8 +114,20 @@ describe("protocol gates", () => {
       allowance: 100,
       nowSec: 1_700_000_000,
     });
+    assert.equal(r.ok, true);
+    if (r.ok) assert.equal(r.order.limitPrice, 0.01);
+  });
+
+  it("fails closed when book params are missing", () => {
+    const r = evaluateProtocolGates({
+      intent: intent(),
+      market: market({ tickSize: 0, lotSize: 0, minQuantity: 0 }),
+      tusdcBalance: 100,
+      allowance: 100,
+      nowSec: 1_700_000_000,
+    });
     assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.code, "invalid_tick");
+    if (!r.ok) assert.equal(r.code, "book_params_unavailable");
   });
 
   it("rejects zero lot after snap", () => {
@@ -403,5 +416,405 @@ describe("submitLiveOrder gate + mocked chain", () => {
     assert.equal(writes.at(-1)?.status, "submitted");
     assert.equal(writes.at(-1)?.transactionHash, "0xmaybe");
     assert.equal(writes.some((w) => w.status === "failed"), false);
+  });
+
+  it("does not replenish when gas is sufficient", async () => {
+    let replenishCalls = 0;
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          return {
+            transactionHash: "0xfill",
+            filledContracts: 5,
+            status: "filled",
+          };
+        },
+      }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(replenishCalls, 0);
+    assert.equal(placeCalls, 1);
+  });
+
+  it("replenishes STT once and retries after genuine insufficient gas", async () => {
+    let replenishCalls = 0;
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          if (placeCalls === 1) {
+            throw new LiveBroadcastError(
+              "insufficient funds for gas * price + value",
+              "confirmed_failure",
+            );
+          }
+          return {
+            transactionHash: "0xretry",
+            filledContracts: 5,
+            status: "filled",
+          };
+        },
+      }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(replenishCalls, 1);
+    assert.equal(placeCalls, 2);
+    if (r.ok) assert.equal(r.transactionHash, "0xretry");
+  });
+
+  it("does not replenish for unrelated failures", async () => {
+    let replenishCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          throw new LiveBroadcastError("PostOnlyWouldCross()", "confirmed_failure");
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "submission_error");
+    assert.equal(replenishCalls, 0);
+  });
+
+  it("fails closed when replenishment fails", async () => {
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => ({
+          ok: false,
+          code: "gas_replenish_failed",
+          reason: "Treasury has insufficient STT.",
+        }),
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          throw new LiveBroadcastError(
+            "insufficient funds for gas * price + value",
+            "confirmed_failure",
+          );
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "gas_replenish_failed");
+    assert.equal(placeCalls, 1);
+  });
+
+  it("does not loop when the retry still has insufficient gas", async () => {
+    let replenishCalls = 0;
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          throw new LiveBroadcastError(
+            "insufficient funds for gas * price + value",
+            "confirmed_failure",
+          );
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "insufficient_gas");
+    assert.equal(replenishCalls, 1);
+    assert.equal(placeCalls, 2);
+  });
+});
+
+describe("submitLiveOrder TAKE vs POST_ONLY", () => {
+  function mockDeps(
+    overrides: Partial<LiveExecutionDeps> & {
+      writes?: Array<Record<string, unknown>>;
+    } = {},
+  ): LiveExecutionDeps {
+    const writes = overrides.writes ?? [];
+    return {
+      readChain: async () => ({
+        market: market(),
+        tusdcBalance: 50,
+        allowance: 50,
+        nowSec: 1_700_000_000,
+      }),
+      ensureAllowance: async () => null,
+      placeIocOrder: async () => ({
+        transactionHash: "0xtake",
+        orderId: "ioc-1",
+        filledContracts: 5,
+        status: "filled" as const,
+      }),
+      updateTrade: async (row) => {
+        writes.push(row);
+      },
+      ...overrides,
+    };
+  }
+
+  it("still uses TAKE/IOC when the fresh book is executable", async () => {
+    let ioc = 0;
+    let maker = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t-take",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        readBook: async () => ({
+          yesAsk: { price: 0.4, quantity: 10 },
+          noAsk: null,
+        }),
+        placeIocOrder: async ({ order }) => {
+          ioc += 1;
+          assert.equal(order.orderType, "IOC");
+          assert.equal(order.limitPrice, 0.4);
+          return {
+            transactionHash: "0xtake",
+            filledContracts: 5,
+            status: "filled",
+          };
+        },
+        placePostOnlyOrder: async () => {
+          maker += 1;
+          return { filledContracts: 0, status: "failed" };
+        },
+      }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(ioc, 1);
+    assert.equal(maker, 0);
+  });
+
+  it("rests POST_ONLY at the same intended limit when the ask is stale", async () => {
+    let makerLimit = 0;
+    const writes: Array<Record<string, unknown>> = [];
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t-maker",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        writes,
+        claimTrade: async () => true,
+        readBook: async () => ({
+          yesAsk: { price: 0.5, quantity: 10 },
+          noAsk: null,
+        }),
+        placeIocOrder: async () => {
+          throw new Error("must not IOC a stale book");
+        },
+        placePostOnlyOrder: async ({ privateKey, order }) => {
+          assert.equal(privateKey, USER_PK);
+          assert.equal(order.orderType, "POST_ONLY");
+          assert.equal(order.limitPrice, 0.4);
+          makerLimit = order.expireAtSec;
+          return {
+            transactionHash: "0xrest",
+            orderId: "maker-1",
+            filledContracts: 0,
+            status: "resting",
+          };
+        },
+      }),
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.status, "submitted");
+      assert.equal(r.orderId, "maker-1");
+      assert.equal(r.order.orderType, "POST_ONLY");
+    }
+    assert.equal(writes.at(-1)?.status, "submitted");
+    assert.match(String(writes.at(-1)?.errorMessage), /post_only_resting/);
+    assert.equal(makerLimit, 2_000_000_000 - 15);
+  });
+
+  it("does not sign when POST_ONLY would cross or size is short", async () => {
+    let ioc = 0;
+    let maker = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent({ contracts: 50 }),
+      tradeId: "t-abort",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        readBook: async () => ({
+          yesAsk: { price: 0.4, quantity: 1 },
+          noAsk: null,
+        }),
+        placeIocOrder: async () => {
+          ioc += 1;
+          return { filledContracts: 0, status: "failed" };
+        },
+        placePostOnlyOrder: async () => {
+          maker += 1;
+          return { filledContracts: 0, status: "failed" };
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "insufficient_liquidity");
+    assert.equal(ioc, 0);
+    assert.equal(maker, 0);
+  });
+
+  it("fails closed when POST_ONLY is needed but the maker path is missing", async () => {
+    let ioc = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t-unavail",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        readBook: async () => ({
+          yesAsk: null,
+          noAsk: null,
+        }),
+        placeIocOrder: async () => {
+          ioc += 1;
+          return { filledContracts: 5, status: "filled" };
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "post_only_unavailable");
+    assert.equal(ioc, 0);
+  });
+
+  it("does not replenish gas for PostOnlyWouldCross", async () => {
+    let replenishCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t-cross",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        readBook: async () => ({
+          yesAsk: { price: 0.5, quantity: 10 },
+          noAsk: null,
+        }),
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placePostOnlyOrder: async () => {
+          throw new LiveBroadcastError("PostOnlyWouldCross()", "confirmed_failure");
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "submission_error");
+    assert.equal(replenishCalls, 0);
+  });
+
+  it("marks no-hash SDK failures failed so the open slot is released", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t-unreach",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        writes,
+        claimTrade: async () => true,
+        placeIocOrder: async () => {
+          throw new LiveBroadcastError(
+            "invariant violated: expected a value to be present",
+            "confirmed_failure",
+          );
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.equal(r.code, "submission_error");
+      assert.equal(r.status, "failed");
+    }
+    assert.equal(writes.at(-1)?.status, "failed");
+  });
+
+  it("never signs user B with user A's key", async () => {
+    const keyA = USER_PK;
+    const keyB = "0x" + "33".repeat(32);
+    const seen: string[] = [];
+    async function run(userId: string, pk: string) {
+      const r = await submitLiveOrder({
+        config: baseConfig({ enableLiveExecution: true }),
+        intent: intent({ userId, walletAddress: `0x${userId}` }),
+        tradeId: `t-${userId}`,
+        encryptedPrivateKey: encryptForTest(WALLET_KEY, pk),
+        liveExecutionRequested: true,
+        deps: mockDeps({
+          claimTrade: async () => true,
+          placeIocOrder: async ({ privateKey }) => {
+            seen.push(`${userId}:${privateKey}`);
+            return {
+              transactionHash: `0x${userId}`,
+              filledContracts: 5,
+              status: "filled",
+            };
+          },
+        }),
+      });
+      assert.equal(r.ok, true);
+    }
+    await run("user-a", keyA);
+    await run("user-b", keyB);
+    assert.deepEqual(seen, [`user-a:${keyA}`, `user-b:${keyB}`]);
   });
 });

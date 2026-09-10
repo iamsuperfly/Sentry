@@ -13,6 +13,11 @@ import {
   type UserRiskPreferences,
   validateUserSettings,
 } from "./risk.ts";
+import {
+  parseAdaptiveStakeBands,
+  resolveAdaptiveStakeBands,
+  type AdaptiveStakeBand,
+} from "./adaptive-stake.ts";
 
 export type ParsedSettingsCommand =
   | { kind: "show" }
@@ -48,7 +53,8 @@ type FieldMatch = {
     | "max_positions"
     | "profit_target"
     | "trading"
-    | "mode";
+    | "mode"
+    | "adaptive";
   value: string;
 };
 
@@ -67,6 +73,9 @@ function matchSettingsField(text: string): FieldMatch | null {
     { prefix: "daily profit", field: "profit_target" },
     { prefix: "default stake", field: "stake" },
     { prefix: "execution mode", field: "mode" },
+    { prefix: "adaptive stake", field: "adaptive" },
+    { prefix: "adaptive bands", field: "adaptive" },
+    { prefix: "adaptive", field: "adaptive" },
   ];
 
   for (const entry of multi) {
@@ -98,11 +107,89 @@ function matchSettingsField(text: string): FieldMatch | null {
     enabled: "trading",
     mode: "mode",
     execution_mode: "mode",
+    adaptive: "adaptive",
+    bands: "adaptive",
   };
 
   const mapped = aliases[field];
   if (!mapped) return null;
   return { field: mapped, value };
+}
+
+function parseAdaptiveSettings(value: string): ParsedSettingsCommand {
+  const text = value.trim().toLowerCase();
+  if (!text || text === "show") {
+    return { kind: "show" };
+  }
+  if (text === "reset" || text === "default" || text === "defaults") {
+    return {
+      kind: "patch",
+      patch: { adaptiveStakeBands: null },
+      label: "adaptive stake bands → system defaults",
+    };
+  }
+  const stripped = text.replace(/^bands\s+/, "");
+  const parts = stripped.split(/\s+/).filter(Boolean);
+  const bands: AdaptiveStakeBand[] = [];
+  for (const part of parts) {
+    if (part.includes(":")) {
+      const [boundRaw, fracRaw] = part.split(":");
+      const bound = Number(boundRaw);
+      const frac = parseAdaptiveFraction(fracRaw ?? "");
+      if (!Number.isFinite(bound) || bound <= 0 || frac === null) {
+        return {
+          kind: "error",
+          reason:
+            "Usage: /settings adaptive 0.55:25 0.65:30 0.75:40 0.85:60 80  (last value is the unbounded fraction; percents or 0-1)",
+        };
+      }
+      bands.push({ maxStrength: bound, fraction: frac });
+    } else {
+      const frac = parseAdaptiveFraction(part);
+      if (frac === null) {
+        return {
+          kind: "error",
+          reason:
+            "Usage: /settings adaptive 0.55:25 0.65:30 0.75:40 0.85:60 80",
+        };
+      }
+      bands.push({ maxStrength: null, fraction: frac });
+    }
+  }
+  const parsed = parseAdaptiveStakeBands(bands);
+  if (!parsed) {
+    return {
+      kind: "error",
+      reason:
+        "Adaptive bands must increase and end with an unbounded fraction. Example: /settings adaptive 0.55:25 0.65:30 0.75:40 0.85:60 80",
+    };
+  }
+  return {
+    kind: "patch",
+    patch: { adaptiveStakeBands: parsed },
+    label: `adaptive stake bands → ${formatAdaptiveBandSummary(parsed)}`,
+  };
+}
+
+function parseAdaptiveFraction(raw: string): number | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  if (n > 1 && n <= 100) return n / 100;
+  if (n > 1) return null;
+  return n;
+}
+
+export function formatAdaptiveBandSummary(
+  bands: readonly AdaptiveStakeBand[] | null | undefined,
+): string {
+  const resolved = resolveAdaptiveStakeBands(bands);
+  return resolved
+    .map((band) =>
+      band.maxStrength === null
+        ? `${Math.round(band.fraction * 100)}%`
+        : `<${band.maxStrength}→${Math.round(band.fraction * 100)}%`,
+    )
+    .join(", ");
 }
 
 export function parseSettingsCommand(
@@ -222,6 +309,8 @@ export function parseSettingsCommand(
         kind: "error",
         reason: "Paper mode has been removed. Trading is Shannon testnet only.",
       };
+    case "adaptive":
+      return parseAdaptiveSettings(value);
     default:
       return {
         kind: "error",
@@ -241,6 +330,10 @@ export function mergeSettingsPatch(
       patch.dailyProfitTarget === undefined
         ? current.dailyProfitTarget
         : patch.dailyProfitTarget,
+    adaptiveStakeBands:
+      patch.adaptiveStakeBands === undefined
+        ? current.adaptiveStakeBands
+        : patch.adaptiveStakeBands,
     executionMode: "testnet",
   };
 }
@@ -267,11 +360,15 @@ export function formatSettingsHelp(system: SystemRiskLimits): string {
     "/settings max positions 5 — maximum active trades",
     "/settings profit target 200 — daily profit target (or off)",
     "/settings trading on — enable or disable trading",
+    "/settings adaptive — show adaptive stake bands",
+    "/settings adaptive reset — restore system-default adaptive bands",
+    "/settings adaptive 0.55:25 0.65:30 0.75:40 0.85:60 80 — custom bands",
     "",
     "Also: /auto on|off, /leaderboard, /claim, /trade",
     "",
     "Default stake is the manual /trade amount.",
     "Max stake is the autonomous adaptive ceiling (default stake cannot exceed it).",
+    "Adaptive bands size the autonomous stake from entry price. Unconfigured users keep Sentry defaults.",
     "Mode is Shannon testnet only. Live submit still needs ENABLE_LIVE_EXECUTION.",
     "Daily limits reset at UTC midnight.",
     "",
@@ -303,6 +400,7 @@ export function formatUserSettings(input: {
     `Max daily loss: ${s.maxDailyLoss} tUSDC`,
     `Max open positions: ${s.maxOpenPositions}`,
     `Daily profit target: ${profit}`,
+    `Adaptive stake: ${s.adaptiveStakeBands ? "custom" : "system defaults"} (${formatAdaptiveBandSummary(s.adaptiveStakeBands)})`,
     "",
     `System limits: min stake ${input.system.minStake}, max stake ${input.system.maxStake}, max positions ${input.system.maxOpenPositions}, max daily loss ${input.system.maxDailyLoss}`,
   ];

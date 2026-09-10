@@ -163,6 +163,12 @@ test("performance message is compact", () => {
     voids: 0,
     unclaimedPositions: 2,
     unclaimedValue: 34.48,
+    dailyStakes: 40,
+    dailyPayouts: 52.4,
+    dailyWins: 3,
+    dailyLosses: 1,
+    dailyVoids: 0,
+    dailySettledTrades: 4,
   });
   assert.match(text, /Today/);
   assert.doesNotMatch(text, /Today \(UTC\)/);

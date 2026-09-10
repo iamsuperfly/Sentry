@@ -34,8 +34,10 @@ import {
   summarizeDayActivity,
   type DayHaltCode,
 } from "./risk-supervisor.ts";
+import { createInFlightGuard } from "./finalization-guard.ts";
 
 const INTERVAL_MS = 6 * 60 * 1000;
+const autonomousGuard = createInFlightGuard();
 
 function errText(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message.slice(0, 240);
@@ -120,8 +122,8 @@ async function buildDailyReport(
   return formatAutonomousDailyReport({
     activity: summarizeDayActivity(statuses),
     dailyPnl: performance.dailyPnl,
-    wins: performance.wins,
-    losses: performance.losses,
+    wins: performance.dailyWins,
+    losses: performance.dailyLosses,
     unclaimedPositions: performance.unclaimedPositions,
     unclaimedValue: performance.unclaimedValue,
   });
@@ -131,6 +133,7 @@ export async function runAutonomousTick(
   bot: Bot,
   config: AppConfig,
   now = new Date(),
+  options?: { minIntervalMs?: number },
 ): Promise<void> {
   let rows;
   try {
@@ -144,7 +147,11 @@ export async function runAutonomousTick(
   }
 
   for (const row of rows) {
-    const decision = shouldRunAutonomousTick(row, now);
+    const decision = shouldRunAutonomousTick(
+      row,
+      now,
+      options?.minIntervalMs,
+    );
     if (decision.pauseForNewDay) {
       const localDate = calendarDateInZone(now, row.timezone);
       try {
@@ -428,15 +435,20 @@ export async function runAutonomousTick(
 export function startAutonomousLoop(
   bot: Bot,
   config: AppConfig,
-): { stop: () => void } {
+): { stop: () => void; requestTick: (minIntervalMs?: number) => void } {
   const timer = setInterval(() => {
-    void runAutonomousTick(bot, config);
+    void autonomousGuard(() => runAutonomousTick(bot, config));
   }, INTERVAL_MS);
   timer.unref?.();
   logger.info({ intervalMs: INTERVAL_MS }, "autonomous loop started");
   return {
     stop() {
       clearInterval(timer);
+    },
+    requestTick(minIntervalMs = 0) {
+      void autonomousGuard(() =>
+        runAutonomousTick(bot, config, new Date(), { minIntervalMs }),
+      );
     },
   };
 }

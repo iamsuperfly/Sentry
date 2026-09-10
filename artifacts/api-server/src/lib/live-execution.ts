@@ -16,12 +16,35 @@ import {
   type TradeIntent,
 } from "./execution.ts";
 import { decryptPrivateKey } from "./wallet-crypto.ts";
+import {
+  parseBinaryBookGrid,
+  snapBinaryAmount,
+  snapBinaryPrice,
+} from "./binary-book-grid.ts";
+import {
+  liveEntryOrderType,
+  POST_ONLY_RESTING_NOTE,
+  postOnlyExpireAtSec,
+  postOnlyWouldCross,
+  selectEntryExecution,
+} from "./post-only-order.ts";
+import {
+  evaluatePreflightBook,
+  type PreflightBook,
+} from "./preflight-book.ts";
+import { looksLikeInsufficientGas } from "./insufficient-gas.ts";
 
 /** Verified Shannon Event Contract test collateral. */
 export const SHANNON_TUSDC =
   "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E" as const;
 
 export const ONCHAIN_TRADING_STATUS = 1;
+
+export const GAS_SPONSORED_NOTE =
+  "Sentry sponsored STT gas for this wallet and retried the order.";
+
+export const POST_ONLY_UNAVAILABLE =
+  "POST_ONLY is required for this book but the maker path is unavailable.";
 
 export type ProtocolMarketSnapshot = {
   marketId: string;
@@ -33,6 +56,11 @@ export type ProtocolMarketSnapshot = {
   tickSize: number;
   /** Contract size lot in human units */
   lotSize: number;
+  /** Minimum order size in human units */
+  minQuantity: number;
+  tickSizeRaw?: bigint;
+  lotSizeRaw?: bigint;
+  minQuantityRaw?: bigint;
   /** Market expiry as unix seconds */
   expirySec: number;
 };
@@ -42,7 +70,7 @@ export type IocOrderDraft = {
   poolAddress: string;
   side: "buy";
   outcome: "YES" | "NO";
-  orderType: "IOC";
+  orderType: "IOC" | "POST_ONLY";
   limitPrice: number;
   contracts: number;
   stake: number;
@@ -69,7 +97,7 @@ export type ChainWriteResult = {
   transactionHash?: string;
   orderId?: string;
   filledContracts: number;
-  status: "filled" | "partially_filled" | "failed";
+  status: "filled" | "partially_filled" | "failed" | "resting";
   errorMessage?: string;
 };
 
@@ -97,6 +125,10 @@ export class LiveBroadcastError extends Error {
 /** Injectable deps — production wires SDK; tests inject mocks. */
 export type LiveExecutionDeps = {
   readChain: (intent: TradeIntent) => Promise<ChainReadSnapshot>;
+  /** Fresh book for TAKE vs POST_ONLY. Absent → TAKE/IOC only (legacy mocks). */
+  readBook?: (
+    order: Pick<IocOrderDraft, "poolAddress" | "decimals" | "marketId">,
+  ) => Promise<PreflightBook>;
   /** Approve pool for collateral if needed. Returns tx hash or null if skipped. */
   ensureAllowance: (input: {
     privateKey: string;
@@ -125,19 +157,20 @@ export type LiveExecutionDeps = {
     tradeId: string;
     userId: string;
   }) => Promise<boolean>;
+  /**
+   * POST_ONLY live path. Required when preflight does not qualify for TAKE.
+   * Missing + POST_ONLY needed → fail closed (never IOC a book that would cross).
+   */
+  placePostOnlyOrder?: (input: {
+    privateKey: string;
+    order: Omit<IocOrderDraft, "orderType"> & { orderType: "POST_ONLY" };
+  }) => Promise<ChainWriteResult>;
+  /** One-shot STT top-up after a genuine insufficient-gas failure. */
+  replenishGas?: (input: {
+    userId: string;
+    walletAddress: string;
+  }) => Promise<{ ok: true; hash: string } | { ok: false; code: string; reason: string }>;
 };
-
-function floorToTick(price: number, tickSize: number): number {
-  if (!(tickSize > 0)) return price;
-  const ticks = Math.floor(price / tickSize + 1e-12);
-  return Number((ticks * tickSize).toFixed(12));
-}
-
-function floorToLot(size: number, lotSize: number): number {
-  if (!(lotSize > 0)) return size;
-  const lots = Math.floor(size / lotSize + 1e-12);
-  return Number((lots * lotSize).toFixed(12));
-}
 
 export function mapDirectionToOutcome(direction: "up" | "down"): "YES" | "NO" {
   return direction === "up" ? "YES" : "NO";
@@ -192,34 +225,36 @@ export function evaluateProtocolGates(input: {
     /* kept for documentation; real path uses market.collateral always */
   }
 
-  if (!(market.tickSize > 0) || !(market.lotSize > 0)) {
-    return {
-      ok: false,
-      code: "invalid_tick_or_lot",
-      reason: "Pool tickSize and lotSize must be positive.",
-    };
+  const scale = 10 ** market.decimals;
+  const toRaw = (human: number | undefined, raw: bigint | undefined): bigint | null => {
+    if (raw !== undefined && raw > 0n) return raw;
+    if (human !== undefined && Number.isFinite(human) && human > 0 && Number.isFinite(scale)) {
+      return BigInt(Math.round(human * scale));
+    }
+    return null;
+  };
+  const gridParsed = parseBinaryBookGrid({
+    tickSizeRaw: toRaw(market.tickSize, market.tickSizeRaw),
+    lotSizeRaw: toRaw(market.lotSize, market.lotSizeRaw),
+    minQuantityRaw: toRaw(market.minQuantity, market.minQuantityRaw),
+    decimals: market.decimals,
+  });
+  if (!gridParsed.ok) {
+    return { ok: false, code: gridParsed.code, reason: gridParsed.reason };
   }
 
-  const snappedPrice = floorToTick(intent.limitPrice, market.tickSize);
-  if (snappedPrice <= 0 || snappedPrice >= 1) {
-    return {
-      ok: false,
-      code: "invalid_tick",
-      reason: `Limit price ${intent.limitPrice} snaps to invalid tick ${snappedPrice}.`,
-    };
+  const snappedPrice = snapBinaryPrice(intent.limitPrice, gridParsed.grid);
+  if (!snappedPrice.ok) {
+    return { ok: false, code: snappedPrice.code, reason: snappedPrice.reason };
   }
 
-  const snappedContracts = floorToLot(intent.contracts, market.lotSize);
-  if (snappedContracts <= 0) {
-    return {
-      ok: false,
-      code: "invalid_lot",
-      reason: `Contract size ${intent.contracts} snaps to zero on lot ${market.lotSize}.`,
-    };
+  const snappedContracts = snapBinaryAmount(intent.contracts, gridParsed.grid);
+  if (!snappedContracts.ok) {
+    return { ok: false, code: snappedContracts.code, reason: snappedContracts.reason };
   }
 
   // Worst-case collateral for a buy ≈ contracts * limitPrice (human).
-  const requiredCollateral = snappedContracts * snappedPrice;
+  const requiredCollateral = snappedContracts.human * snappedPrice.human;
   if (tusdcBalance + 1e-12 < requiredCollateral) {
     return {
       ok: false,
@@ -257,9 +292,9 @@ export function evaluateProtocolGates(input: {
       poolAddress,
       side: "buy",
       outcome: mapDirectionToOutcome(intent.direction),
-      orderType: "IOC",
-      limitPrice: snappedPrice,
-      contracts: snappedContracts,
+      orderType: liveEntryOrderType(),
+      limitPrice: snappedPrice.human,
+      contracts: snappedContracts.human,
       stake: intent.stake,
       collateral: market.collateral,
       decimals: market.decimals,
@@ -417,16 +452,6 @@ export async function submitLiveOrder(input: {
   }
 
   try {
-    if (protocol.needsApproval) {
-      await input.deps.ensureAllowance({
-        privateKey,
-        collateral: protocol.order.collateral,
-        pool: protocol.order.poolAddress,
-        amount: protocol.requiredAllowance,
-        decimals: protocol.order.decimals,
-      });
-    }
-
     if (!claimed) {
       await input.deps.updateTrade({
         tradeId: input.tradeId,
@@ -436,10 +461,202 @@ export async function submitLiveOrder(input: {
       });
     }
 
-    const placed = await input.deps.placeIocOrder({
-      privateKey,
-      order: protocol.order,
-    });
+    let order = protocol.order;
+    if (input.deps.readBook) {
+      let book: PreflightBook;
+      try {
+        book = await input.deps.readBook(order);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message.slice(0, 240) : "Fresh book read failed.";
+        await input.deps.updateTrade({
+          tradeId: input.tradeId,
+          userId: input.intent.userId,
+          status: "failed",
+          errorMessage: message,
+          fromStatus: "submitted",
+        });
+        return {
+          ok: false,
+          code: "book_read_failed",
+          reason: message,
+          tradeId: input.tradeId,
+          status: "failed",
+        };
+      }
+      const pre = evaluatePreflightBook({
+        outcome: order.outcome,
+        limitPrice: order.limitPrice,
+        contracts: order.contracts,
+        book,
+      });
+      const selected = selectEntryExecution(pre);
+      if (selected.mode === "ABORT") {
+        await input.deps.updateTrade({
+          tradeId: input.tradeId,
+          userId: input.intent.userId,
+          status: "failed",
+          errorMessage: selected.reason,
+          fromStatus: "submitted",
+        });
+        return {
+          ok: false,
+          code: selected.code,
+          reason: selected.reason,
+          tradeId: input.tradeId,
+          status: "failed",
+        };
+      }
+      if (selected.mode === "POST_ONLY") {
+        if (postOnlyWouldCross({
+          outcome: order.outcome,
+          limitPrice: order.limitPrice,
+          book,
+        })) {
+          const reason = `POST_ONLY would cross at limit ${order.limitPrice}.`;
+          await input.deps.updateTrade({
+            tradeId: input.tradeId,
+            userId: input.intent.userId,
+            status: "failed",
+            errorMessage: reason,
+            fromStatus: "submitted",
+          });
+          return {
+            ok: false,
+            code: "post_only_would_cross",
+            reason,
+            tradeId: input.tradeId,
+            status: "failed",
+          };
+        }
+        if (!input.deps.placePostOnlyOrder) {
+          await input.deps.updateTrade({
+            tradeId: input.tradeId,
+            userId: input.intent.userId,
+            status: "failed",
+            errorMessage: POST_ONLY_UNAVAILABLE,
+            fromStatus: "submitted",
+          });
+          return {
+            ok: false,
+            code: "post_only_unavailable",
+            reason: POST_ONLY_UNAVAILABLE,
+            tradeId: input.tradeId,
+            status: "failed",
+          };
+        }
+        order = {
+          ...order,
+          orderType: "POST_ONLY",
+          expireAtSec: postOnlyExpireAtSec(snapshot.nowSec, snapshot.market.expirySec),
+        };
+      }
+    }
+
+    const writeOnce = async () => {
+      if (protocol.needsApproval) {
+        await input.deps.ensureAllowance({
+          privateKey,
+          collateral: order.collateral,
+          pool: order.poolAddress,
+          amount: protocol.requiredAllowance,
+          decimals: order.decimals,
+        });
+      }
+      if (order.orderType === "POST_ONLY") {
+        if (!input.deps.placePostOnlyOrder) {
+          return {
+            filledContracts: 0,
+            status: "failed" as const,
+            errorMessage: POST_ONLY_UNAVAILABLE,
+          };
+        }
+        return input.deps.placePostOnlyOrder({
+          privateKey,
+          order: { ...order, orderType: "POST_ONLY" },
+        });
+      }
+      return input.deps.placeIocOrder({
+        privateKey,
+        order,
+      });
+    };
+
+    let placed: ChainWriteResult;
+    let replenished = false;
+    const tryReplenish = async (): Promise<LiveSubmitResult | null> => {
+      if (replenished || !input.deps.replenishGas) return null;
+      const gas = await input.deps.replenishGas({
+        userId: input.intent.userId,
+        walletAddress: input.intent.walletAddress,
+      });
+      replenished = true;
+      if (!gas.ok) {
+        await input.deps.updateTrade({
+          tradeId: input.tradeId,
+          userId: input.intent.userId,
+          status: "failed",
+          errorMessage: gas.reason,
+          fromStatus: "submitted",
+        });
+        return {
+          ok: false,
+          code: gas.code,
+          reason: gas.reason,
+          tradeId: input.tradeId,
+          status: "failed",
+        };
+      }
+      return null;
+    };
+
+    try {
+      placed = await writeOnce();
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message.slice(0, 240) : "Unknown submit error";
+      if (looksLikeInsufficientGas("insufficient_gas", message)) {
+        const failed = await tryReplenish();
+        if (failed) return failed;
+        if (!replenished) throw error;
+        placed = await writeOnce();
+      } else {
+        throw error;
+      }
+    }
+
+    if (
+      placed.status === "failed" &&
+      looksLikeInsufficientGas("insufficient_gas", placed.errorMessage) &&
+      !replenished
+    ) {
+      const failed = await tryReplenish();
+      if (failed) return failed;
+      placed = await writeOnce();
+    }
+
+    if (placed.status === "resting") {
+      await input.deps.updateTrade({
+        tradeId: input.tradeId,
+        userId: input.intent.userId,
+        status: "submitted",
+        transactionHash: placed.transactionHash,
+        orderId: placed.orderId,
+        filledContracts: placed.filledContracts,
+        errorMessage: POST_ONLY_RESTING_NOTE,
+        fromStatus: "submitted",
+      });
+      return {
+        ok: true,
+        gated: false,
+        tradeId: input.tradeId,
+        status: "submitted",
+        transactionHash: placed.transactionHash,
+        orderId: placed.orderId,
+        filledContracts: placed.filledContracts,
+        order,
+      };
+    }
 
     const nextStatus: IntentStatus =
       placed.status === "filled"
@@ -466,6 +683,13 @@ export async function submitLiveOrder(input: {
       };
     }
 
+    const errorMessage =
+      nextStatus === "failed"
+        ? placed.errorMessage
+        : replenished
+          ? GAS_SPONSORED_NOTE
+          : placed.errorMessage;
+
     await input.deps.updateTrade({
       tradeId: input.tradeId,
       userId: input.intent.userId,
@@ -473,14 +697,22 @@ export async function submitLiveOrder(input: {
       transactionHash: placed.transactionHash,
       orderId: placed.orderId,
       filledContracts: placed.filledContracts,
-      errorMessage: placed.errorMessage,
+      errorMessage,
       fromStatus: "submitted",
     });
 
     if (nextStatus === "failed") {
+      const gasFail = looksLikeInsufficientGas(
+        "insufficient_gas",
+        placed.errorMessage,
+      );
       return {
         ok: false,
-        code: "submission_failed",
+        code: gasFail
+          ? replenished
+            ? "gas_retry_failed"
+            : "insufficient_gas"
+          : "submission_failed",
         reason: placed.errorMessage ?? "Order submission failed.",
         tradeId: input.tradeId,
         status: "failed",
@@ -495,12 +727,32 @@ export async function submitLiveOrder(input: {
       transactionHash: placed.transactionHash,
       orderId: placed.orderId,
       filledContracts: placed.filledContracts,
-      order: protocol.order,
+      order,
     };
   } catch (error) {
     const message =
       error instanceof Error ? error.message.slice(0, 240) : "Unknown submit error";
-    if (error instanceof LiveBroadcastError && error.broadcastState === "uncertain") {
+    if (looksLikeInsufficientGas("insufficient_gas", message)) {
+      await input.deps.updateTrade({
+        tradeId: input.tradeId,
+        userId: input.intent.userId,
+        status: "failed",
+        errorMessage: message,
+        fromStatus: claimed ? "submitted" : "pending",
+      });
+      return {
+        ok: false,
+        code: "insufficient_gas",
+        reason: message,
+        tradeId: input.tradeId,
+        status: "failed",
+      };
+    }
+    if (
+      error instanceof LiveBroadcastError &&
+      error.broadcastState === "uncertain" &&
+      error.transactionHash
+    ) {
       await input.deps.updateTrade({
         tradeId: input.tradeId,
         userId: input.intent.userId,
@@ -553,7 +805,8 @@ export function describeProductionSubmitPath(): string[] {
     "Read tUSDC balanceOf + allowance(pool)",
     "evaluateProtocolGates",
     "approve collateral to current pool if needed (user key)",
-    "place IOC buy YES/NO via markets-sdk trader",
-    "update trades status submitted → filled|partially_filled|failed",
+    "Shared SomniaMarkets for reads; per-user write session for signing",
+    "Fresh book: TAKE/IOC if executable, else POST_ONLY at intended limit, else fail closed",
+    "update trades status submitted → filled|partially_filled|failed (POST_ONLY rest stays submitted)",
   ];
 }

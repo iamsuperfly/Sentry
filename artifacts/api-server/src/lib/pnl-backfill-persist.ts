@@ -68,8 +68,14 @@ export async function persistPnlBackfill(
   return Array.isArray(data) && data.length === 1;
 }
 
-export async function backfillMissingPnl(config: AppConfig): Promise<number> {
-  const rows = await listSettledTradesMissingPnl(config, { limit: 40 });
+export async function backfillMissingPnl(
+  config: AppConfig,
+  userId?: string,
+): Promise<number> {
+  const rows = await listSettledTradesMissingPnl(config, {
+    limit: 40,
+    userId,
+  });
   let written = 0;
   for (const trade of rows) {
     if (!trade.marketId) continue;

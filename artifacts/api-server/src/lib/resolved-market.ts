@@ -12,7 +12,7 @@ import type { Address, Hex } from "viem";
 import type { AppConfig } from "../config.ts";
 import type { MarketLifecycleView } from "./position-lifecycle.ts";
 import type { DreamdexBook } from "./dreamdex.ts";
-import { closeExchange } from "./exchange-lifecycle.ts";
+import { getSharedSomniaExchange } from "./somnia-client.ts";
 
 export function exchangeFromConfig(config: AppConfig): SomniaMarkets {
   return new SomniaMarkets({
@@ -48,14 +48,12 @@ export async function readResolvedMarketOnchain(
   config: AppConfig,
   marketId: string,
 ): Promise<MarketLifecycleView | null> {
-  const exchange = exchangeFromConfig(config);
+  const exchange = getSharedSomniaExchange(config);
   try {
     const onchain = await exchange.client.getMarketOnchain(marketId as Hex);
     return onchainToLifecycle(marketId, onchain);
   } catch {
     return null;
-  } finally {
-    await closeExchange(exchange, { chainTouched: true });
   }
 }
 
@@ -64,26 +62,22 @@ export async function readFreshBinaryBook(
   poolAddress: string,
   decimals: number,
 ): Promise<DreamdexBook> {
-  const exchange = exchangeFromConfig(config);
-  try {
-    const book = await exchange.client.getBinaryOrderBook(poolAddress as Address, {
-      depth: 5,
-      decimals,
-    });
-    const levels = (entries: Array<{ price: bigint; quantity: bigint }>) =>
-      entries.map(({ price, quantity }) => ({
-        price: price.toString(),
-        quantity: quantity.toString(),
-      }));
-    return {
-      yesBids: levels(book.yesBids),
-      yesAsks: levels(book.yesAsks),
-      noBids: levels(book.noBids),
-      noAsks: levels(book.noAsks),
-    };
-  } finally {
-    await closeExchange(exchange, { chainTouched: true });
-  }
+  const exchange = getSharedSomniaExchange(config);
+  const book = await exchange.client.getBinaryOrderBook(poolAddress as Address, {
+    depth: 5,
+    decimals,
+  });
+  const levels = (entries: Array<{ price: bigint; quantity: bigint }>) =>
+    entries.map(({ price, quantity }) => ({
+      price: price.toString(),
+      quantity: quantity.toString(),
+    }));
+  return {
+    yesBids: levels(book.yesBids),
+    yesAsks: levels(book.yesAsks),
+    noBids: levels(book.noBids),
+    noAsks: levels(book.noAsks),
+  };
 }
 
 export function rawToHuman(raw: bigint, decimals: number): number {

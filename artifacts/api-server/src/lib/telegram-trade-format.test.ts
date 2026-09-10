@@ -282,6 +282,20 @@ describe("position and history display", () => {
     assert.match(text, /shannon-explorer/);
   });
 
+  it("shows the real DreamDEX market ID alongside the label", () => {
+    const text = formatPositionBlock(
+      {
+        ...baseTrade,
+        symbol: "BTC/YES",
+        marketId: "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      },
+      "https://shannon-explorer.somnia.network/tx",
+      1_700_000_100,
+    );
+    assert.match(text, /Market ID: 0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef/);
+    assert.doesNotMatch(text, /BTC-0x00000000/);
+  });
+
   it("estimateUnrealizedPnl returns null without mark; computes when mark present", () => {
     assert.equal(
       estimateUnrealizedPnl({

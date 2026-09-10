@@ -93,6 +93,7 @@ export type DisplayTrade = {
   contracts: number | null;
   transactionHash: string | null;
   errorMessage: string | null;
+  marketId?: string | null;
   marketExpiry?: string | number | null;
   tradingStart?: string | number | null;
   intervalSec?: string | number | null;
@@ -106,6 +107,12 @@ function directionLabel(direction: string): string {
   if (d === "up" || d === "yes") return "YES UP";
   if (d === "down" || d === "no") return "NO DOWN";
   return direction.toUpperCase();
+}
+
+function marketIdLine(marketId: string | null | undefined): string | null {
+  const id = (marketId ?? "").trim();
+  if (!id) return null;
+  return `Market ID: ${id}`;
 }
 
 export function formatOrderStatusLabel(status: string): string {
@@ -187,11 +194,15 @@ export function formatPositionBlock(
   });
   const lines = [
     `${trade.symbol} · ${directionLabel(trade.direction)} · ${timeframe}`,
+  ];
+  const idLine = marketIdLine(trade.marketId);
+  if (idLine) lines.push(idLine);
+  lines.push(
     `Order: ${formatOrderStatusLabel(trade.status)}`,
     `Time left: ${remaining}`,
     `Stake: ${trade.stake} tUSDC`,
     `Entry price: ${price}`,
-  ];
+  );
   if (fill) lines.push(fill);
   if (unrealized !== null) {
     const sign = unrealized > 0 ? "+" : "";
@@ -227,11 +238,15 @@ export function formatHistoryBlock(
     : trade.status.toUpperCase();
   const lines = [
     `${trade.symbol} · ${directionLabel(trade.direction)} · ${timeframe}`,
+  ];
+  const idLine = marketIdLine(trade.marketId);
+  if (idLine) lines.push(idLine);
+  lines.push(
     `Result: ${resultLabel}`,
     `Status: ${formatOrderStatusLabel(trade.status)}`,
     `Stake: ${trade.stake} tUSDC`,
     `Entry price: ${price}`,
-  ];
+  );
   if (trade.filledContracts !== null && trade.filledContracts !== undefined) {
     lines.push(`Contracts: ${trade.filledContracts}`);
   }
@@ -262,6 +277,7 @@ export function formatTradeExecutionMessage(input: {
   intervalSec?: string | number | null;
   explorerTxBaseUrl: string;
   nowSec?: number;
+  marketId?: string | null;
 }): string {
   const nowSec = input.nowSec ?? Math.floor(Date.now() / 1000);
   const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry, input.intervalSec);
@@ -277,12 +293,16 @@ export function formatTradeExecutionMessage(input: {
     "",
     `Trade ID: ${input.tradeId}`,
     `Market: ${input.symbol} · ${timeframe}`,
+  ];
+  const idLine = marketIdLine(input.marketId);
+  if (idLine) lines.push(idLine);
+  lines.push(
     `Direction: ${directionLabel(input.direction)}`,
     `Resolves in: ${remaining}`,
     `Stake: ${input.stake} tUSDC`,
     `Limit/fill price: ${price}`,
     `Status: ${input.status}`,
-  ];
+  );
   if (tx) lines.push(tx);
   return lines.join("\n");
 }

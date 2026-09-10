@@ -30,6 +30,7 @@ import { setAutonomousEnabled } from "./autonomous-state.ts";
 import {
   remainingDailyLossBudget,
   sizeAdaptiveStakeFromEntry,
+  parseAdaptiveStakeBands,
 } from "./adaptive-stake.ts";
 import {
   DEFAULT_USER_TIMEZONE,
@@ -44,7 +45,7 @@ export type TelegramIdentity = {
 };
 
 const SETTINGS_COLUMNS =
-  "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso, timezone, autonomous_enabled, autonomous_paused_at";
+  "user_id, trading_enabled, execution_mode, default_stake_usdso, max_trade_stake_usdso, max_daily_loss_usdso, max_open_positions, daily_profit_target_usdso, timezone, autonomous_enabled, autonomous_paused_at, adaptive_stake_bands";
 
 export async function expireStalePendingTradeIntents(
   config: AppConfig,
@@ -137,6 +138,7 @@ type SettingsRow = {
   timezone?: string | null;
   autonomous_enabled?: boolean | null;
   autonomous_paused_at?: string | null;
+  adaptive_stake_bands?: unknown;
 };
 
 type PersistedTradeRow = {
@@ -184,6 +186,7 @@ function mapSettings(row: SettingsRow): PersistedUserSettings {
       row.daily_profit_target_usdso === null
         ? null
         : numeric(row.daily_profit_target_usdso, "daily_profit_target_usdso"),
+    adaptiveStakeBands: parseAdaptiveStakeBands(row.adaptive_stake_bands),
     timezone: DEFAULT_USER_TIMEZONE,
     autonomousEnabled: Boolean(row.autonomous_enabled),
     autonomousPausedAt: row.autonomous_paused_at ?? null,
@@ -236,6 +239,7 @@ export async function saveUserSettings(
         max_daily_loss_usdso: checked.settings.maxDailyLoss,
         max_open_positions: checked.settings.maxOpenPositions,
         daily_profit_target_usdso: checked.settings.dailyProfitTarget,
+        adaptive_stake_bands: checked.settings.adaptiveStakeBands ?? null,
       },
       { onConflict: "user_id" },
     )
@@ -282,6 +286,7 @@ export async function getRealizedPnlToday(
     .from("trades")
     .select("pnl_usdso")
     .eq("user_id", userId)
+    .in("status", ["settled", "redeemed", "cancelled"])
     .not("pnl_usdso", "is", null)
     .gte("settled_at", start)
     .lt("settled_at", end);
@@ -403,6 +408,7 @@ async function insertTradeIntent(
       direction: intent.direction,
       side: intent.side,
       pool_address: intent.poolAddress,
+      pool_nonce: intent.decision?.poolNonce ?? null,
       status: intent.status,
       reject_reason: intent.rejectReason,
     })
@@ -494,6 +500,7 @@ export async function createPersistedTradeIntent(input: {
       systemMaxStake: input.config.systemLimits.maxStake,
       remainingBudget,
       collateralBalance: Number(walletBalances.tusdc),
+      bands: storedSettings.adaptiveStakeBands,
     });
     if (!sized.ok) {
       return {

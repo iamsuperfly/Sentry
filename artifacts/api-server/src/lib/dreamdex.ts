@@ -1,6 +1,4 @@
 import {
-  SOMNIA_TESTNET_ADDRESSES,
-  SomniaMarkets,
   type BinaryMarket,
   type BinaryOrderBook,
   type MarketOnchain,
@@ -8,7 +6,7 @@ import {
 import { somniaShannon } from "@somnia-chain/markets-sdk/chains";
 import type { Hex } from "viem";
 import type { AppConfig } from "../config";
-import { closeExchange } from "./exchange-lifecycle";
+import { getSharedSomniaExchange } from "./somnia-client";
 import {
   resolveMarketReferencePrice,
   type MarketReference,
@@ -155,16 +153,8 @@ export async function readDreamdexMarkets(
   config: AppConfig,
   asset?: string,
 ): Promise<DreamdexDiagnostic> {
-  const exchange = new SomniaMarkets({
-    indexerUrl: config.dreamdexIndexerUrl,
-    chain: somniaShannon,
-    wsRpcUrl: config.wsRpcUrl,
-    addresses: SOMNIA_TESTNET_ADDRESSES,
-  });
-  let chainTouched = false;
-
-  try {
-    const requestedAsset = asset?.trim().toUpperCase();
+  const exchange = getSharedSomniaExchange(config);
+  const requestedAsset = asset?.trim().toUpperCase();
     const listOpts = {
       asset: requestedAsset && SUPPORTED_ASSETS.has(requestedAsset)
         ? requestedAsset
@@ -192,7 +182,6 @@ export async function readDreamdexMarkets(
 
     const diagnostics = await Promise.all(
       selectedMarkets.map(async (market) => {
-        chainTouched = true;
         const onchain = await exchange.client.getMarketOnchain(
           market.marketId as Hex,
         );
@@ -227,7 +216,5 @@ export async function readDreamdexMarkets(
       tradableCount: diagnostics.filter((market) => market.tradable).length,
       listingApi,
     };
-  } finally {
-    await closeExchange(exchange, { chainTouched });
-  }
+
 }

@@ -4,15 +4,14 @@
  */
 
 import { parseUnits, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
 import type { AppConfig } from "../config.ts";
 import { logger } from "./logger.ts";
 import { decideClaim, type ClaimDecision } from "./claim-decision.ts";
 import {
-  exchangeFromConfig,
   onchainToLifecycle,
   rawToHuman,
 } from "./resolved-market.ts";
+import { withUserWriteSession } from "./somnia-client.ts";
 import {
   outcomeBalanceParams,
   parseOutcomeId,
@@ -111,14 +110,9 @@ export async function runUserClaimScan(input: {
   if (trades.length === 0) return [];
 
   const privateKey = decryptPrivateKey(input.config, input.encryptedPrivateKey);
-  const exchange = exchangeFromConfig(input.config);
-  const trader = exchange.client.createTrader({
-    privateKey: privateKey as Hex,
-  });
-  const account = privateKeyToAccount(privateKey as Hex);
-
   const attempts: ClaimAttempt[] = [];
   try {
+    return await withUserWriteSession(input.config, privateKey, async ({ trader, exchange, account }) => {
     for (const trade of trades) {
       try {
         const onchain = await exchange.client.getMarketOnchain(
@@ -207,6 +201,15 @@ export async function runUserClaimScan(input: {
         );
 
         if (decision.action === "skip") {
+          if (
+            (decision.code === "already_claimed" || decision.code === "zero_balance") &&
+            trade.status === "settled"
+          ) {
+            await markTradeRedeemed(input.config, {
+              tradeId: trade.id,
+              userId: input.userId,
+            });
+          }
           attempts.push({
             tradeId: trade.id,
             marketId: trade.marketId,
@@ -290,11 +293,9 @@ export async function runUserClaimScan(input: {
         });
       }
     }
+      return attempts;
+    });
   } finally {
-    await Promise.race([
-      exchange.close(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-    ]);
+    // private key dropped with the write session
   }
-  return attempts;
 }

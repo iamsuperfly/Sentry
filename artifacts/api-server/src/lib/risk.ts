@@ -10,6 +10,13 @@
  */
 
 import {
+  DEFAULT_ADAPTIVE_STAKE_BANDS,
+  parseAdaptiveStakeBands,
+  resolveAdaptiveStakeBands,
+  validateAdaptiveStakeBands,
+  type AdaptiveStakeBand,
+} from "./adaptive-stake.ts";
+import {
   DEFAULT_SYSTEM_LIMITS,
   type SystemRiskLimits,
 } from "./system-limits.ts";
@@ -26,6 +33,11 @@ export type UserRiskPreferences = {
   dailyProfitTarget: number | null;
   /** paper = never request live chain submit; testnet = may request when ENABLE_LIVE_EXECUTION=true */
   executionMode: ExecutionMode;
+  /**
+   * Optional per-user adaptive stake bands. Null/undefined = system defaults.
+   * Risk limits still cap the resulting stake.
+   */
+  adaptiveStakeBands?: AdaptiveStakeBand[] | null;
 };
 
 /** Runtime inputs that are not user-editable preferences. */
@@ -150,6 +162,21 @@ export function validateUserSettings(
     };
   }
 
+  let adaptiveStakeBands: AdaptiveStakeBand[] | null = null;
+  if (prefs.adaptiveStakeBands !== undefined && prefs.adaptiveStakeBands !== null) {
+    const parsed = parseAdaptiveStakeBands(prefs.adaptiveStakeBands);
+    if (!parsed) {
+      return {
+        ok: false,
+        code: "invalid_adaptive_bands",
+        reason: "Adaptive stake bands are not valid.",
+      };
+    }
+    const bandsOk = validateAdaptiveStakeBands(parsed);
+    if (!bandsOk.ok) return bandsOk;
+    adaptiveStakeBands = parsed;
+  }
+
   return {
     ok: true,
     settings: {
@@ -161,6 +188,7 @@ export function validateUserSettings(
       dailyProfitTarget:
         dailyProfitTarget === undefined ? null : dailyProfitTarget,
       executionMode,
+      adaptiveStakeBands,
     },
   };
 }
@@ -301,4 +329,10 @@ export const DEFAULT_USER_PREFERENCES: UserRiskPreferences = {
   maxOpenPositions: 1,
   dailyProfitTarget: null,
   executionMode: "testnet",
+  adaptiveStakeBands: null,
+};
+
+export {
+  DEFAULT_ADAPTIVE_STAKE_BANDS,
+  resolveAdaptiveStakeBands,
 };

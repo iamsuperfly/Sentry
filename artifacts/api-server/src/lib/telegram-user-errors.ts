@@ -36,6 +36,19 @@ export function looksLikeBookMiss(code: string, reason?: string | null): boolean
   );
 }
 
+export function looksLikeSdkClientFailure(code: string, reason?: string | null): boolean {
+  const blob = `${code}\n${reason ?? ""}`;
+  return (
+    /unreachable/i.test(blob) ||
+    /invariant violated/i.test(blob) ||
+    /invarianterror/i.test(blob) ||
+    /no external wallet/i.test(blob) ||
+    /websocket/i.test(blob) ||
+    /ws_request/i.test(blob) ||
+    /not connected/i.test(blob)
+  );
+}
+
 export function looksLikeAllowanceOrRpc(code: string, reason?: string | null): boolean {
   const blob = `${code}\n${reason ?? ""}`.toLowerCase();
   return (
@@ -45,7 +58,8 @@ export function looksLikeAllowanceOrRpc(code: string, reason?: string | null): b
     /readcontract/.test(blob) ||
     /json-rpc/.test(blob) ||
     /econnreset/.test(blob) ||
-    /fetch failed/.test(blob)
+    /fetch failed/.test(blob) ||
+    looksLikeSdkClientFailure(code, reason)
   );
 }
 
@@ -74,8 +88,11 @@ export function sanitizeTechnicalErrorNote(raw: string | null | undefined): stri
   if (looksLikeIocNoFill("", raw) || looksLikeBookMiss("", raw)) {
     return NOTHING_TAKEN;
   }
-  if (looksLikeAllowanceOrRpc("", raw)) {
+  if (looksLikeAllowanceOrRpc("", raw) || looksLikeSdkClientFailure("", raw)) {
     return "Network issue. Try again shortly.";
+  }
+  if (/post_only_resting/i.test(raw)) {
+    return "Maker order is resting on the book.";
   }
   if (/enable_live_execution/i.test(raw)) {
     return "Live trading is not enabled on the server.";
@@ -138,6 +155,7 @@ export function formatUserFacingTradeFailure(input: {
       "",
       "Check status and try again shortly.",
       "No funds were used unless a transaction already confirmed.",
+      "Report to @iamsuperflly if the issue persists.",
     ].join("\n");
   }
 
@@ -185,6 +203,16 @@ export function formatUserFacingTradeFailure(input: {
     case "insufficient_balance":
     case "insufficient_tusdc":
       return ["⚪ Insufficient tUSDC", "", "Add funds from the faucet or check Wallet.", "No trade was placed."].join("\n");
+    case "insufficient_gas":
+    case "gas_replenish_failed":
+    case "gas_retry_failed":
+      return [
+        "⚪ Network gas",
+        "",
+        "Sentry sponsors STT gas when the wallet is short.",
+        "Check status and try again shortly.",
+        "No funds were used unless a transaction already confirmed.",
+      ].join("\n");
     case "unauthenticated":
       return ["⚪ Wallet not ready", "", "Tap Start first to create your wallet."].join("\n");
     case "persist_failed":
