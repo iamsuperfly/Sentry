@@ -260,3 +260,36 @@ describe("reconcileSubmittedTrade", () => {
     assert.equal(updates[0]?.fromStatus, "partially_filled");
   });
 });
+
+describe("POST_ONLY resting reconciliation", () => {
+  it("waits on a successful 0-fill placement that is a resting maker", () => {
+    const d = classifyReceiptOutcome({
+      trade: baseTrade({
+        orderId: "maker-1",
+        errorMessage: "post_only_resting: maker order accepted; waiting for fill",
+      }),
+      observation: {
+        kind: "success",
+        transactionHash: "0xabc",
+        orderId: "maker-1",
+        filledContracts: 0,
+      },
+    });
+    assert.equal(d.nextStatus, null);
+    assert.equal(d.action, "wait");
+    assert.equal(d.mayPlaceNewOrder, false);
+  });
+
+  it("still marks IOC 0-fill as failed", () => {
+    const d = classifyReceiptOutcome({
+      trade: baseTrade(),
+      observation: {
+        kind: "success",
+        transactionHash: "0xabc",
+        filledContracts: 0,
+      },
+    });
+    assert.equal(d.nextStatus, "failed");
+    assert.equal(d.action, "mark_failed");
+  });
+});

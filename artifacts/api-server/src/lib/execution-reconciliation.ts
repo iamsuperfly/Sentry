@@ -6,6 +6,7 @@
  */
 
 import type { AppConfig } from "../config.ts";
+import { isPostOnlyRestingNote } from "./post-only-order.ts";
 import {
   canTransition,
   type IntentStatus,
@@ -70,7 +71,7 @@ export type ReconcileDecision = {
 export function classifyReceiptOutcome(input: {
   trade: Pick<
     SubmittedTradeRow,
-    "status" | "transactionHash" | "contracts"
+    "status" | "transactionHash" | "contracts" | "errorMessage" | "orderId"
   >;
   observation: ReceiptObservation;
 }): ReconcileDecision {
@@ -130,6 +131,21 @@ export function classifyReceiptOutcome(input: {
     case "success": {
       const filled = observation.filledContracts;
       if (!(filled > 0)) {
+        if (
+          isPostOnlyRestingNote(input.trade.errorMessage) &&
+          (observation.orderId || input.trade.orderId)
+        ) {
+          return {
+            nextStatus: null,
+            mayPlaceNewOrder: false,
+            action: "wait",
+            reason:
+              "POST_ONLY resting; placement succeeded with zero fill. Do not mark failed.",
+            transactionHash: observation.transactionHash,
+            orderId: observation.orderId ?? input.trade.orderId,
+            filledContracts: 0,
+          };
+        }
         return {
           nextStatus: "failed",
           mayPlaceNewOrder: false,

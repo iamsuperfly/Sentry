@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { classifyLiveMarketDelta } from "./protocol-events.ts";
+import {
+  classifyBookDelta,
+  classifyLiveMarketDelta,
+  fingerprintBinaryTop,
+  isTradingOpportunityKind,
+} from "./protocol-events.ts";
 
 describe("protocol live events", () => {
   it("emits market_live for a newly seen Trading market", () => {
@@ -75,5 +80,36 @@ describe("protocol live events", () => {
       },
     });
     assert.equal(event, null);
+  });
+});
+
+describe("book_change opportunity", () => {
+  it("fingerprints top of book", () => {
+    const fp = fingerprintBinaryTop({
+      yesAsks: [{ price: 400000n, quantity: 1000000n }],
+      noAsks: [{ price: 600000n, quantity: 500000n }],
+    });
+    assert.equal(fp, "400000:1000000|600000:500000");
+  });
+
+  it("emits book_change only after the first observation", () => {
+    assert.equal(
+      classifyBookDelta({ previousFingerprint: null, nextFingerprint: "a" }),
+      null,
+    );
+    assert.equal(
+      classifyBookDelta({ previousFingerprint: "a", nextFingerprint: "a" }),
+      null,
+    );
+    assert.equal(
+      classifyBookDelta({ previousFingerprint: "a", nextFingerprint: "b" }),
+      "book_change",
+    );
+  });
+
+  it("treats book_change as a trading opportunity for the existing engine", () => {
+    assert.equal(isTradingOpportunityKind("book_change"), true);
+    assert.equal(isTradingOpportunityKind("market_live"), true);
+    assert.equal(isTradingOpportunityKind("locked"), false);
   });
 });

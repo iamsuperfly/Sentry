@@ -4,16 +4,14 @@
  * decide trades. The 6-minute loop remains the reconciliation fallback.
  */
 
-import { SomniaMarkets } from "@somnia-chain/markets-sdk";
-import { somniaShannon } from "@somnia-chain/markets-sdk/chains";
-import { SOMNIA_TESTNET_ADDRESSES } from "@somnia-chain/markets-sdk";
+import type { SomniaMarkets } from "@somnia-chain/markets-sdk";
 import type { AppConfig } from "../config.ts";
-import { closeExchange } from "./exchange-lifecycle.ts";
 import { logger } from "./logger.ts";
 import {
   rememberWindow,
   type MarketWindowIdentity,
 } from "./market-window.ts";
+import { getSharedSomniaExchange } from "./somnia-client.ts";
 
 export type ProtocolEventKind =
   | "market_live"
@@ -54,6 +52,16 @@ type LiveRow = {
   status?: string;
   clobStatus?: string;
 };
+
+type TopLevel = { price: string; quantity: string };
+
+export function isTradingOpportunityKind(kind: ProtocolEventKind): boolean {
+  return (
+    kind === "market_live" ||
+    kind === "new_window" ||
+    kind === "book_change"
+  );
+}
 
 function identityOf(row: LiveRow): MarketWindowIdentity | null {
   if (row.marketType && row.marketType !== "BINARY") return null;
@@ -111,18 +119,61 @@ export function classifyLiveMarketDelta(input: {
   return null;
 }
 
+function topOf(levels: Array<{ price?: unknown; quantity?: unknown }> | undefined): TopLevel | null {
+  const top = levels?.[0];
+  if (!top) return null;
+  return {
+    price: String(top.price ?? ""),
+    quantity: String(top.quantity ?? ""),
+  };
+}
+
+export function fingerprintBinaryTop(book: {
+  yesAsks?: Array<{ price?: unknown; quantity?: unknown }>;
+  noAsks?: Array<{ price?: unknown; quantity?: unknown }>;
+}): string {
+  const yes = topOf(book.yesAsks);
+  const no = topOf(book.noAsks);
+  return `${yes?.price ?? "-"}:${yes?.quantity ?? "-"}|${no?.price ?? "-"}:${no?.quantity ?? "-"}`;
+}
+
+/** First observation is owned by market_live; only later diffs emit book_change. */
+export function classifyBookDelta(input: {
+  previousFingerprint: string | null;
+  nextFingerprint: string;
+}): "book_change" | null {
+  if (input.previousFingerprint === null) return null;
+  if (input.previousFingerprint === input.nextFingerprint) return null;
+  return "book_change";
+}
+
+function debounceMsFor(opportunity: ProtocolEvent | null, lifecycle: ProtocolEvent | null): number {
+  if (opportunity?.kind === "book_change" && !lifecycle) return 1_000;
+  return 8_000;
+}
+
+function readLiveBook(
+  exchange: SomniaMarkets,
+  poolAddress: string,
+): { fingerprint: string } | null {
+  try {
+    const status = exchange.client.getWatchStatus(poolAddress);
+    if (status !== "live") return null;
+    const book = exchange.client.getLiveBinaryOrderBook(poolAddress, { depth: 1 });
+    return { fingerprint: fingerprintBinaryTop(book) };
+  } catch {
+    return null;
+  }
+}
+
 export function startProtocolEventBus(
   config: AppConfig,
   handlers: ProtocolEventHandlers,
 ): { stop: () => void } {
-  const exchange = new SomniaMarkets({
-    chain: somniaShannon,
-    wsRpcUrl: config.wsRpcUrl,
-    indexerUrl: config.dreamdexIndexerUrl,
-    addresses: SOMNIA_TESTNET_ADDRESSES,
-  });
+  const exchange = getSharedSomniaExchange(config);
 
   const seen = new Map<string, { status: string; window: MarketWindowIdentity }>();
+  const books = new Map<string, string>();
   let debounce: ReturnType<typeof setTimeout> | null = null;
   let queuedLifecycle: ProtocolEvent | null = null;
   let queuedOpportunity: ProtocolEvent | null = null;
@@ -140,13 +191,13 @@ export function startProtocolEventBus(
   };
 
   const enqueue = (event: ProtocolEvent) => {
-    if (event.kind === "market_live" || event.kind === "new_window") {
+    if (isTradingOpportunityKind(event.kind)) {
       queuedOpportunity = event;
-    } else if (event.kind !== "book_change") {
+    } else {
       queuedLifecycle = event;
     }
     if (debounce) return;
-    debounce = setTimeout(flush, 8_000);
+    debounce = setTimeout(flush, debounceMsFor(queuedOpportunity, queuedLifecycle));
     debounce.unref?.();
   };
 
@@ -165,10 +216,11 @@ export function startProtocolEventBus(
     for (const row of rows) {
       const window = identityOf(row);
       if (!window) continue;
-      const prev = seen.get(window.poolAddress.toLowerCase()) ?? null;
+      const poolKey = window.poolAddress.toLowerCase();
+      const prev = seen.get(poolKey) ?? null;
       const event = classifyLiveMarketDelta({ previous: prev, next: row });
       const change = rememberWindow(window);
-      seen.set(window.poolAddress.toLowerCase(), {
+      seen.set(poolKey, {
         status: statusOf(row),
         window,
       });
@@ -177,6 +229,15 @@ export function startProtocolEventBus(
         continue;
       }
       if (event) enqueue(event);
+
+      if (statusOf(row) !== "Trading") continue;
+      const liveBook = readLiveBook(exchange, window.poolAddress);
+      if (!liveBook) continue;
+      const prevFp = books.has(poolKey) ? books.get(poolKey)! : null;
+      books.set(poolKey, liveBook.fingerprint);
+      if (classifyBookDelta({ previousFingerprint: prevFp, nextFingerprint: liveBook.fingerprint })) {
+        enqueue({ kind: "book_change", ...window });
+      }
     }
   };
 
@@ -203,7 +264,7 @@ export function startProtocolEventBus(
       } catch {
         /* ignore */
       }
-      void closeExchange(exchange, { chainTouched: true });
+      // Shared read client stays up for listing / live submit reads.
     },
   };
 }

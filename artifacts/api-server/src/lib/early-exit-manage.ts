@@ -11,7 +11,7 @@ import { soldCostBasis } from "./cost-basis.ts";
 import { logger } from "./logger.ts";
 import { getSupabaseClient } from "./supabase.ts";
 import { decryptPrivateKey } from "./wallet-crypto.ts";
-import { exchangeFromConfig } from "./resolved-market.ts";
+import { withUserWriteSession } from "./somnia-client.ts";
 import {
   evaluateEarlyExit,
   yesLimitRawForSell,
@@ -168,11 +168,8 @@ export async function manageOpenPositions(input: {
   }
 
   const privateKey = decryptPrivateKey(input.config, input.encryptedPrivateKey);
-  const exchange = exchangeFromConfig(input.config);
   try {
-    const trader = exchange.client.createTrader({
-      privateKey: privateKey as Hex,
-    });
+    return await withUserWriteSession(input.config, privateKey, async ({ trader, exchange }) => {
 
     for (const position of positions) {
       try {
@@ -442,14 +439,11 @@ export async function manageOpenPositions(input: {
         });
       }
     }
+      return { attempts, excludedMarketIds: [...excluded] };
+    });
   } finally {
-    await Promise.race([
-      exchange.close(),
-      new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
-    ]);
+    // private key dropped with the write session
   }
-
-  return { attempts, excludedMarketIds: [...excluded] };
 }
 
 export function formatEarlyExitMessage(attempts: EarlyExitAttempt[]): string | null {

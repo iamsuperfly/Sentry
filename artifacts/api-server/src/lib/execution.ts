@@ -233,11 +233,11 @@ export function planLiveSubmission(intent: TradeIntent): {
   return {
     steps: [
       "Decrypt user encrypted_private_key in memory (WALLET_ENCRYPTION_KEY).",
-      "Construct SomniaMarkets with user privateKey (never treasury).",
+      "Open a per-user Somnia write session with that key (never treasury, never the shared read client).",
       "PROTOCOL: Re-read getMarketOnchain(marketId); abort if status !== Trading.",
       "PROTOCOL: Snap price to pool tick grid; snap size to lot grid; abort if size becomes 0.",
       "PROTOCOL: Ensure tUSDC (0x70a86D…) allowance to current pool; approve if needed.",
-      "Place IOC buy on YES or NO at limitPrice for contracts.",
+      "If the fresh book is executable, TAKE/IOC; otherwise rest POST_ONLY at the intended limit when it would not cross.",
       "Persist transaction hash / fill size; transition pending → submitted → filled|failed.",
     ],
     signer: "user_wallet",

@@ -21,7 +21,17 @@ import {
   snapBinaryAmount,
   snapBinaryPrice,
 } from "./binary-book-grid.ts";
-import { liveEntryOrderType } from "./post-only-order.ts";
+import {
+  liveEntryOrderType,
+  POST_ONLY_RESTING_NOTE,
+  postOnlyExpireAtSec,
+  postOnlyWouldCross,
+  selectEntryExecution,
+} from "./post-only-order.ts";
+import {
+  evaluatePreflightBook,
+  type PreflightBook,
+} from "./preflight-book.ts";
 import { looksLikeInsufficientGas } from "./insufficient-gas.ts";
 
 /** Verified Shannon Event Contract test collateral. */
@@ -32,6 +42,9 @@ export const ONCHAIN_TRADING_STATUS = 1;
 
 export const GAS_SPONSORED_NOTE =
   "Sentry sponsored STT gas for this wallet and retried the order.";
+
+export const POST_ONLY_UNAVAILABLE =
+  "POST_ONLY is required for this book but the maker path is unavailable.";
 
 export type ProtocolMarketSnapshot = {
   marketId: string;
@@ -57,7 +70,7 @@ export type IocOrderDraft = {
   poolAddress: string;
   side: "buy";
   outcome: "YES" | "NO";
-  orderType: "IOC";
+  orderType: "IOC" | "POST_ONLY";
   limitPrice: number;
   contracts: number;
   stake: number;
@@ -84,7 +97,7 @@ export type ChainWriteResult = {
   transactionHash?: string;
   orderId?: string;
   filledContracts: number;
-  status: "filled" | "partially_filled" | "failed";
+  status: "filled" | "partially_filled" | "failed" | "resting";
   errorMessage?: string;
 };
 
@@ -112,6 +125,10 @@ export class LiveBroadcastError extends Error {
 /** Injectable deps — production wires SDK; tests inject mocks. */
 export type LiveExecutionDeps = {
   readChain: (intent: TradeIntent) => Promise<ChainReadSnapshot>;
+  /** Fresh book for TAKE vs POST_ONLY. Absent → TAKE/IOC only (legacy mocks). */
+  readBook?: (
+    order: Pick<IocOrderDraft, "poolAddress" | "decimals" | "marketId">,
+  ) => Promise<PreflightBook>;
   /** Approve pool for collateral if needed. Returns tx hash or null if skipped. */
   ensureAllowance: (input: {
     privateKey: string;
@@ -141,8 +158,8 @@ export type LiveExecutionDeps = {
     userId: string;
   }) => Promise<boolean>;
   /**
-   * POST_ONLY capability. Not used by the live TAKE/IOC path.
-   * Optional so existing mocks stay valid.
+   * POST_ONLY live path. Required when preflight does not qualify for TAKE.
+   * Missing + POST_ONLY needed → fail closed (never IOC a book that would cross).
    */
   placePostOnlyOrder?: (input: {
     privateKey: string;
@@ -444,19 +461,124 @@ export async function submitLiveOrder(input: {
       });
     }
 
+    let order = protocol.order;
+    if (input.deps.readBook) {
+      let book: PreflightBook;
+      try {
+        book = await input.deps.readBook(order);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message.slice(0, 240) : "Fresh book read failed.";
+        await input.deps.updateTrade({
+          tradeId: input.tradeId,
+          userId: input.intent.userId,
+          status: "failed",
+          errorMessage: message,
+          fromStatus: "submitted",
+        });
+        return {
+          ok: false,
+          code: "book_read_failed",
+          reason: message,
+          tradeId: input.tradeId,
+          status: "failed",
+        };
+      }
+      const pre = evaluatePreflightBook({
+        outcome: order.outcome,
+        limitPrice: order.limitPrice,
+        contracts: order.contracts,
+        book,
+      });
+      const selected = selectEntryExecution(pre);
+      if (selected.mode === "ABORT") {
+        await input.deps.updateTrade({
+          tradeId: input.tradeId,
+          userId: input.intent.userId,
+          status: "failed",
+          errorMessage: selected.reason,
+          fromStatus: "submitted",
+        });
+        return {
+          ok: false,
+          code: selected.code,
+          reason: selected.reason,
+          tradeId: input.tradeId,
+          status: "failed",
+        };
+      }
+      if (selected.mode === "POST_ONLY") {
+        if (postOnlyWouldCross({
+          outcome: order.outcome,
+          limitPrice: order.limitPrice,
+          book,
+        })) {
+          const reason = `POST_ONLY would cross at limit ${order.limitPrice}.`;
+          await input.deps.updateTrade({
+            tradeId: input.tradeId,
+            userId: input.intent.userId,
+            status: "failed",
+            errorMessage: reason,
+            fromStatus: "submitted",
+          });
+          return {
+            ok: false,
+            code: "post_only_would_cross",
+            reason,
+            tradeId: input.tradeId,
+            status: "failed",
+          };
+        }
+        if (!input.deps.placePostOnlyOrder) {
+          await input.deps.updateTrade({
+            tradeId: input.tradeId,
+            userId: input.intent.userId,
+            status: "failed",
+            errorMessage: POST_ONLY_UNAVAILABLE,
+            fromStatus: "submitted",
+          });
+          return {
+            ok: false,
+            code: "post_only_unavailable",
+            reason: POST_ONLY_UNAVAILABLE,
+            tradeId: input.tradeId,
+            status: "failed",
+          };
+        }
+        order = {
+          ...order,
+          orderType: "POST_ONLY",
+          expireAtSec: postOnlyExpireAtSec(snapshot.nowSec, snapshot.market.expirySec),
+        };
+      }
+    }
+
     const writeOnce = async () => {
       if (protocol.needsApproval) {
         await input.deps.ensureAllowance({
           privateKey,
-          collateral: protocol.order.collateral,
-          pool: protocol.order.poolAddress,
+          collateral: order.collateral,
+          pool: order.poolAddress,
           amount: protocol.requiredAllowance,
-          decimals: protocol.order.decimals,
+          decimals: order.decimals,
+        });
+      }
+      if (order.orderType === "POST_ONLY") {
+        if (!input.deps.placePostOnlyOrder) {
+          return {
+            filledContracts: 0,
+            status: "failed" as const,
+            errorMessage: POST_ONLY_UNAVAILABLE,
+          };
+        }
+        return input.deps.placePostOnlyOrder({
+          privateKey,
+          order: { ...order, orderType: "POST_ONLY" },
         });
       }
       return input.deps.placeIocOrder({
         privateKey,
-        order: protocol.order,
+        order,
       });
     };
 
@@ -511,6 +633,29 @@ export async function submitLiveOrder(input: {
       const failed = await tryReplenish();
       if (failed) return failed;
       placed = await writeOnce();
+    }
+
+    if (placed.status === "resting") {
+      await input.deps.updateTrade({
+        tradeId: input.tradeId,
+        userId: input.intent.userId,
+        status: "submitted",
+        transactionHash: placed.transactionHash,
+        orderId: placed.orderId,
+        filledContracts: placed.filledContracts,
+        errorMessage: POST_ONLY_RESTING_NOTE,
+        fromStatus: "submitted",
+      });
+      return {
+        ok: true,
+        gated: false,
+        tradeId: input.tradeId,
+        status: "submitted",
+        transactionHash: placed.transactionHash,
+        orderId: placed.orderId,
+        filledContracts: placed.filledContracts,
+        order,
+      };
     }
 
     const nextStatus: IntentStatus =
@@ -582,7 +727,7 @@ export async function submitLiveOrder(input: {
       transactionHash: placed.transactionHash,
       orderId: placed.orderId,
       filledContracts: placed.filledContracts,
-      order: protocol.order,
+      order,
     };
   } catch (error) {
     const message =
@@ -603,7 +748,11 @@ export async function submitLiveOrder(input: {
         status: "failed",
       };
     }
-    if (error instanceof LiveBroadcastError && error.broadcastState === "uncertain") {
+    if (
+      error instanceof LiveBroadcastError &&
+      error.broadcastState === "uncertain" &&
+      error.transactionHash
+    ) {
       await input.deps.updateTrade({
         tradeId: input.tradeId,
         userId: input.intent.userId,
@@ -656,7 +805,8 @@ export function describeProductionSubmitPath(): string[] {
     "Read tUSDC balanceOf + allowance(pool)",
     "evaluateProtocolGates",
     "approve collateral to current pool if needed (user key)",
-    "place IOC buy YES/NO via markets-sdk trader",
-    "update trades status submitted → filled|partially_filled|failed",
+    "Shared SomniaMarkets for reads; per-user write session for signing",
+    "Fresh book: TAKE/IOC if executable, else POST_ONLY at intended limit, else fail closed",
+    "update trades status submitted → filled|partially_filled|failed (POST_ONLY rest stays submitted)",
   ];
 }
