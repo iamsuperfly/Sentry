@@ -78,6 +78,7 @@ describe("human trade errors", () => {
       reason: "rpc readContract balanceOf failed",
     });
     assert.match(rpc, /Network or allowance/);
+    assert.match(rpc, /@iamsuperflly/);
     assert.doesNotMatch(rpc, /readContract/);
   });
 

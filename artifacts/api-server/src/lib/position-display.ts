@@ -51,6 +51,7 @@ function mapRow(row: Record<string, unknown>): DisplayTrade {
     limitPrice: num(row.limit_price),
     transactionHash: (row.transaction_hash as string | null) ?? null,
     errorMessage: (row.error_message as string | null) ?? null,
+    marketId: (row.market_id as string | null) ?? null,
     marketExpiry: meta.marketExpiry,
     tradingStart: meta.tradingStart,
     intervalSec: meta.intervalSec,
@@ -98,7 +99,7 @@ export async function listHistoryForDisplay(
   limit = HISTORY_DISPLAY_LIMIT,
 ): Promise<DisplayTrade[]> {
   try {
-    await backfillMissingPnl(config);
+    await backfillMissingPnl(config, userId);
   } catch {
     // History still renders; reconstructed rows appear on the next request.
   }

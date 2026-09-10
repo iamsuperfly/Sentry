@@ -207,6 +207,15 @@ export async function runUserClaimScan(input: {
         );
 
         if (decision.action === "skip") {
+          if (
+            (decision.code === "already_claimed" || decision.code === "zero_balance") &&
+            trade.status === "settled"
+          ) {
+            await markTradeRedeemed(input.config, {
+              tradeId: trade.id,
+              userId: input.userId,
+            });
+          }
           attempts.push({
             tradeId: trade.id,
             marketId: trade.marketId,

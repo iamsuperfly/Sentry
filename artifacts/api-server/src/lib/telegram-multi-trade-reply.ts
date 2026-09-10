@@ -61,6 +61,7 @@ export function formatMultiTradeReply(input: {
         marketExpiry: a.decision?.expiry ?? input.fallback.decision.expiry,
         intervalSec: decisionMeta.intervalSec,
         explorerTxBaseUrl: input.explorerTxBaseUrl,
+        marketId: a.decision?.marketId ?? input.fallback.decision.marketId,
       }),
     );
   }

@@ -4,6 +4,7 @@
  */
 
 import { parseUnits, type Hex, type Address } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
 import { ORDER_TYPE } from "@somnia-chain/markets-sdk";
 import type { AppConfig } from "../config.ts";
 import { soldCostBasis } from "./cost-basis.ts";
@@ -16,6 +17,17 @@ import {
   yesLimitRawForSell,
   type EarlyExitPosition,
 } from "./early-exit.ts";
+import {
+  parseBinaryBookGrid,
+  snapBinaryAmount,
+} from "./binary-book-grid.ts";
+import { planOutcomeSell, type OutcomeSide } from "./outcome-sell.ts";
+import {
+  outcomeBalanceParams,
+  parseOutcomeId,
+  resolveOutcomeTokenAddress,
+} from "./resolve-outcome-token.ts";
+import { rememberWindow } from "./market-window.ts";
 
 export type EarlyExitAttempt = {
   tradeId: string;
@@ -209,12 +221,84 @@ export async function manageOpenPositions(input: {
         }
 
         const contracts = position.filledContracts ?? 0;
-        const quantity = parseUnits(String(contracts), onchain.decimals);
+        const params = await exchange.client.getBinaryBookParams(onchain.pool as Address);
+        const gridParsed = parseBinaryBookGrid({
+          tickSizeRaw: params.tickSize,
+          lotSizeRaw: params.lotSize,
+          minQuantityRaw: params.minQuantity,
+          decimals: onchain.decimals,
+        });
+        if (!gridParsed.ok) {
+          attempts.push({
+            tradeId: position.tradeId,
+            marketId: position.marketId,
+            symbol: position.symbol,
+            status: "held",
+            code: gridParsed.code,
+            reason: gridParsed.reason,
+          });
+          continue;
+        }
+        const snapped = snapBinaryAmount(contracts, gridParsed.grid);
+        if (!snapped.ok) {
+          attempts.push({
+            tradeId: position.tradeId,
+            marketId: position.marketId,
+            symbol: position.symbol,
+            status: "held",
+            code: "invalid_sell",
+            reason: snapped.reason,
+          });
+          continue;
+        }
+        rememberWindow({
+          marketId: position.marketId,
+          poolAddress: onchain.pool,
+          poolNonce: onchain.nonce === undefined || onchain.nonce === null ? "" : String(onchain.nonce),
+        });
+        const sellSide: OutcomeSide = position.direction === "down" ? "NO" : "YES";
+        const token = resolveOutcomeTokenAddress(onchain);
+        let heldQuantity = 0;
+        if (token.ok) {
+          const outcomeId =
+            sellSide === "YES"
+              ? parseOutcomeId((onchain as { yesId?: unknown }).yesId)
+              : parseOutcomeId((onchain as { noId?: unknown }).noId);
+          if (outcomeId !== null) {
+            const account = privateKeyToAccount(privateKey as Hex);
+            const heldRaw = await exchange.client.getOutcomeBalance(
+              outcomeBalanceParams({
+                outcomeToken: token.address,
+                account: account.address,
+                id: outcomeId,
+              }),
+            );
+            heldQuantity = rawToHuman(heldRaw, onchain.decimals);
+          }
+        }
+        const plan = planOutcomeSell({
+          desiredSide: sellSide,
+          desiredQuantity: contracts,
+          heldQuantity,
+          snappedQuantity: snapped.human,
+        });
+        if (!plan.ok) {
+          attempts.push({
+            tradeId: position.tradeId,
+            marketId: position.marketId,
+            symbol: position.symbol,
+            status: "held",
+            code: plan.code,
+            reason: plan.reason,
+          });
+          continue;
+        }
         const price = yesLimitRawForSell({
           direction: position.direction,
           outcomeOwnBid: bid!,
           decimals: onchain.decimals,
         });
+        const quantity = parseUnits(String(plan.sellQuantity), onchain.decimals);
         if (!price || quantity <= 0n) {
           attempts.push({
             tradeId: position.tradeId,
@@ -226,10 +310,29 @@ export async function manageOpenPositions(input: {
           });
           continue;
         }
+        if (plan.mode === "mint_complete_set") {
+          const mintAmount = parseUnits(String(plan.mintQuantity), onchain.decimals);
+          if (mintAmount <= 0n) {
+            attempts.push({
+              tradeId: position.tradeId,
+              marketId: position.marketId,
+              symbol: position.symbol,
+              status: "held",
+              code: "invalid_sell",
+              reason: "Complete-set mint amount is zero; no order signed.",
+            });
+            continue;
+          }
+          await trader.mintSet({
+            pool: onchain.pool as Address,
+            amount: mintAmount,
+            autoApprove: true,
+          });
+        }
 
         const result = await trader.placeOrder({
           pool: onchain.pool as Address,
-          side: position.direction === "down" ? "SELL_NO" : "SELL_YES",
+          side: sellSide === "NO" ? "SELL_NO" : "SELL_YES",
           price,
           quantity,
           orderType: ORDER_TYPE.MARKET,
@@ -370,7 +473,7 @@ export function formatEarlyExitMessage(attempts: EarlyExitAttempt[]): string | n
         status: "filled",
       } as EarlyExitPosition);
       if (a.status === "failed") {
-        return `${title} stay open\nNothing was taken at this price.`;
+        return `${title} stay open\nMarket ID: ${a.marketId}\nNothing was taken at this price.`;
       }
       const proceeds =
         a.proceeds !== undefined && Number.isFinite(a.proceeds)
@@ -384,7 +487,7 @@ export function formatEarlyExitMessage(attempts: EarlyExitAttempt[]): string | n
         a.status === "partial" && a.remainingContracts
           ? `\nRemainder still open: ${Math.round(a.remainingContracts * 1e3) / 1e3}`
           : "";
-      return `${title} closed early${proceeds}${pnl}${remain}`;
+      return `${title} closed early\nMarket ID: ${a.marketId}${proceeds}${pnl}${remain}`;
     }),
   ].join("\n");
 }

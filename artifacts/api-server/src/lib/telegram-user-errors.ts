@@ -138,6 +138,7 @@ export function formatUserFacingTradeFailure(input: {
       "",
       "Check status and try again shortly.",
       "No funds were used unless a transaction already confirmed.",
+      "Report to @iamsuperflly if the issue persists.",
     ].join("\n");
   }
 
@@ -185,6 +186,16 @@ export function formatUserFacingTradeFailure(input: {
     case "insufficient_balance":
     case "insufficient_tusdc":
       return ["⚪ Insufficient tUSDC", "", "Add funds from the faucet or check Wallet.", "No trade was placed."].join("\n");
+    case "insufficient_gas":
+    case "gas_replenish_failed":
+    case "gas_retry_failed":
+      return [
+        "⚪ Network gas",
+        "",
+        "Sentry sponsors STT gas when the wallet is short.",
+        "Check status and try again shortly.",
+        "No funds were used unless a transaction already confirmed.",
+      ].join("\n");
     case "unauthenticated":
       return ["⚪ Wallet not ready", "", "Tap Start first to create your wallet."].join("\n");
     case "persist_failed":

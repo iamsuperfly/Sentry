@@ -158,4 +158,23 @@ describe("entry-price adaptive stake", () => {
       70,
     );
   });
+
+  it("uses custom user bands when provided and defaults otherwise", () => {
+    const custom = sizeAdaptiveStakeFromEntry({
+      entryPrice: 0.46,
+      maxTradeStake: 50,
+      systemMinStake: 1,
+      systemMaxStake: 200,
+      remainingBudget: 300,
+      bands: [
+        { maxStrength: 0.9, fraction: 0.5 },
+        { maxStrength: null, fraction: 0.9 },
+      ],
+    });
+    assert.equal(custom.ok, true);
+    if (custom.ok) {
+      assert.equal(custom.fraction, 0.5);
+      assert.equal(custom.stake, 25);
+    }
+  });
 });

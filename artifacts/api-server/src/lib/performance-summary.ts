@@ -24,6 +24,12 @@ export type PerformanceSummary = {
   voids: number;
   unclaimedPositions: number;
   unclaimedValue: number;
+  dailyStakes: number;
+  dailyPayouts: number;
+  dailyWins: number;
+  dailyLosses: number;
+  dailyVoids: number;
+  dailySettledTrades: number;
 };
 
 function finitePnl(value: number | null | undefined): number | null {
@@ -87,6 +93,12 @@ export function summarizePerformance(
     voids: 0,
     unclaimedPositions: 0,
     unclaimedValue: 0,
+    dailyStakes: 0,
+    dailyPayouts: 0,
+    dailyWins: 0,
+    dailyLosses: 0,
+    dailyVoids: 0,
+    dailySettledTrades: 0,
   };
 
   for (const trade of trades) {
@@ -106,7 +118,19 @@ export function summarizePerformance(
     if (pnl === null) continue;
     summary.reconstructedCount += 1;
     summary.allTimePnl += pnl;
-    if (isInstantInLocalDay(trade.settledAt, now, timeZone)) summary.dailyPnl += pnl;
+    const inUtcDay = isInstantInLocalDay(trade.settledAt, now, timeZone);
+    if (inUtcDay) {
+      summary.dailyPnl += pnl;
+      summary.dailySettledTrades += 1;
+      if (kind === "win") summary.dailyWins += 1;
+      else if (kind === "loss") summary.dailyLosses += 1;
+      else summary.dailyVoids += 1;
+      if (Number.isFinite(trade.stake) && trade.stake > 0) {
+        summary.dailyStakes += trade.stake;
+      }
+      const payout = trade.stake + pnl;
+      if (Number.isFinite(payout) && payout > 0) summary.dailyPayouts += payout;
+    }
 
     const claimable = unclaimedPayout(trade);
     if (claimable !== null) {
@@ -119,6 +143,8 @@ export function summarizePerformance(
   summary.allTimePnl = round(summary.allTimePnl);
   summary.dailyPnl = round(summary.dailyPnl);
   summary.unclaimedValue = round(summary.unclaimedValue);
+  summary.dailyStakes = round(summary.dailyStakes);
+  summary.dailyPayouts = round(summary.dailyPayouts);
   return summary;
 }
 
@@ -132,6 +158,10 @@ export function formatPerformanceMessage(summary: PerformanceSummary): string {
     "",
     "Today",
     `PnL: ${signed(summary.dailyPnl)} tUSDC`,
+    `Wins: ${summary.dailyWins}`,
+    `Losses: ${summary.dailyLosses}`,
+    `Stakes: ${summary.dailyStakes} tUSDC`,
+    `Payouts: ${summary.dailyPayouts} tUSDC`,
     "",
     "All time",
     `PnL: ${signed(summary.allTimePnl)} tUSDC`,

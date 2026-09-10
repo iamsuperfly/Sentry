@@ -82,6 +82,7 @@ function market(
     decimals: 6,
     tickSize: 0.01,
     lotSize: 0.1,
+    minQuantity: 0.001,
     expirySec: 2_000_000_000,
     ...overrides,
   };
@@ -105,7 +106,7 @@ describe("protocol gates", () => {
     if (!r.ok) assert.equal(r.code, "market_not_trading");
   });
 
-  it("rejects invalid tick after snap", () => {
+  it("clamps sub-tick prices onto the venue grid instead of guessing", () => {
     const r = evaluateProtocolGates({
       intent: intent({ limitPrice: 0.004 }),
       market: market({ tickSize: 0.01 }),
@@ -113,8 +114,20 @@ describe("protocol gates", () => {
       allowance: 100,
       nowSec: 1_700_000_000,
     });
+    assert.equal(r.ok, true);
+    if (r.ok) assert.equal(r.order.limitPrice, 0.01);
+  });
+
+  it("fails closed when book params are missing", () => {
+    const r = evaluateProtocolGates({
+      intent: intent(),
+      market: market({ tickSize: 0, lotSize: 0, minQuantity: 0 }),
+      tusdcBalance: 100,
+      allowance: 100,
+      nowSec: 1_700_000_000,
+    });
     assert.equal(r.ok, false);
-    if (!r.ok) assert.equal(r.code, "invalid_tick");
+    if (!r.ok) assert.equal(r.code, "book_params_unavailable");
   });
 
   it("rejects zero lot after snap", () => {
@@ -403,5 +416,155 @@ describe("submitLiveOrder gate + mocked chain", () => {
     assert.equal(writes.at(-1)?.status, "submitted");
     assert.equal(writes.at(-1)?.transactionHash, "0xmaybe");
     assert.equal(writes.some((w) => w.status === "failed"), false);
+  });
+
+  it("does not replenish when gas is sufficient", async () => {
+    let replenishCalls = 0;
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          return {
+            transactionHash: "0xfill",
+            filledContracts: 5,
+            status: "filled",
+          };
+        },
+      }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(replenishCalls, 0);
+    assert.equal(placeCalls, 1);
+  });
+
+  it("replenishes STT once and retries after genuine insufficient gas", async () => {
+    let replenishCalls = 0;
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          if (placeCalls === 1) {
+            throw new LiveBroadcastError(
+              "insufficient funds for gas * price + value",
+              "confirmed_failure",
+            );
+          }
+          return {
+            transactionHash: "0xretry",
+            filledContracts: 5,
+            status: "filled",
+          };
+        },
+      }),
+    });
+    assert.equal(r.ok, true);
+    assert.equal(replenishCalls, 1);
+    assert.equal(placeCalls, 2);
+    if (r.ok) assert.equal(r.transactionHash, "0xretry");
+  });
+
+  it("does not replenish for unrelated failures", async () => {
+    let replenishCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          throw new LiveBroadcastError("PostOnlyWouldCross()", "confirmed_failure");
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "submission_error");
+    assert.equal(replenishCalls, 0);
+  });
+
+  it("fails closed when replenishment fails", async () => {
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => ({
+          ok: false,
+          code: "gas_replenish_failed",
+          reason: "Treasury has insufficient STT.",
+        }),
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          throw new LiveBroadcastError(
+            "insufficient funds for gas * price + value",
+            "confirmed_failure",
+          );
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "gas_replenish_failed");
+    assert.equal(placeCalls, 1);
+  });
+
+  it("does not loop when the retry still has insufficient gas", async () => {
+    let replenishCalls = 0;
+    let placeCalls = 0;
+    const r = await submitLiveOrder({
+      config: baseConfig({ enableLiveExecution: true }),
+      intent: intent(),
+      tradeId: "t1",
+      encryptedPrivateKey: encryptForTest(WALLET_KEY, USER_PK),
+      liveExecutionRequested: true,
+      deps: mockDeps({
+        claimTrade: async () => true,
+        replenishGas: async () => {
+          replenishCalls += 1;
+          return { ok: true, hash: "0xgas" };
+        },
+        placeIocOrder: async () => {
+          placeCalls += 1;
+          throw new LiveBroadcastError(
+            "insufficient funds for gas * price + value",
+            "confirmed_failure",
+          );
+        },
+      }),
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "insufficient_gas");
+    assert.equal(replenishCalls, 1);
+    assert.equal(placeCalls, 2);
   });
 });

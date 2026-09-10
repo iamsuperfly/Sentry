@@ -5,11 +5,14 @@ export type ClaimAttemptView = {
   reason: string;
   payoutEstimate?: number | null;
   transactionHash?: string;
+  marketId?: string;
 };
 
-function formatClaimLine(a: ClaimAttemptView): string {
+function formatClaimLine(a: ClaimAttemptView & { marketId?: string }): string {
   const head = `${a.symbol} ${a.direction.toUpperCase()}`;
-  const lines = [`${head}`, `   Status: claimed`];
+  const lines = [`${head}`];
+  if (a.marketId) lines.push(`   Market ID: ${a.marketId}`);
+  lines.push(`   Status: claimed`);
   if (a.payoutEstimate != null) {
     lines.push(`   Payout: ${a.payoutEstimate} tUSDC`);
   }

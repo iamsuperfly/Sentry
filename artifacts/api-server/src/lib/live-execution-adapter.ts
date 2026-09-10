@@ -29,6 +29,9 @@ import {
 import { claimPendingTrade, updateTradeExecution } from "./supabase.ts";
 import { evaluatePreflightBook, levelFromBookSide } from "./preflight-book.ts";
 import { logger } from "./logger.ts";
+import { looksLikeInsufficientGas, looksLikePostOnlyWouldCross } from "./insufficient-gas.ts";
+import { replenishUserSttGas } from "./gas-replenish.ts";
+import { rememberWindow } from "./market-window.ts";
 
 const erc20Abi = [
   {
@@ -77,9 +80,14 @@ function toBroadcastError(error: unknown, operation: string): LiveBroadcastError
     error && typeof error === "object" && "name" in error
       ? String((error as { name: unknown }).name)
       : "";
-  const confirmed = /revert|contractrevert|execution reverted/i.test(
-    `${name} ${message}`,
-  );
+  const blob = `${name} ${message}`;
+  if (looksLikeInsufficientGas(name, message)) {
+    return new LiveBroadcastError(message, "confirmed_failure", hash);
+  }
+  if (looksLikePostOnlyWouldCross(name, blob)) {
+    return new LiveBroadcastError(message, "confirmed_failure", hash);
+  }
+  const confirmed = /revert|contractrevert|execution reverted/i.test(blob);
   return new LiveBroadcastError(
     message,
     confirmed ? "confirmed_failure" : hash ? "uncertain" : "uncertain",
@@ -121,6 +129,14 @@ export function createProductionLiveExecutionDeps(
       const client = exchange(config).client;
       const market = await client.getMarketOnchain(intent.marketId as Hex);
       const params = await client.getBinaryBookParams(market.pool);
+      if (!params || params.tickSize <= 0n || params.lotSize <= 0n || params.minQuantity <= 0n) {
+        throw new Error("Pool tickSize, lotSize, and minQuantity are required.");
+      }
+      rememberWindow({
+        marketId: intent.marketId,
+        poolAddress: market.pool,
+        poolNonce: market.nonce === undefined || market.nonce === null ? "" : String(market.nonce),
+      });
       const [balance, allowance] = await Promise.all([
         client.getErc20Balance(market.collateral, address(intent.walletAddress)),
         client.getErc20Allowance(
@@ -138,6 +154,10 @@ export function createProductionLiveExecutionDeps(
           decimals: market.decimals,
           tickSize: rawToHuman(params.tickSize, market.decimals),
           lotSize: rawToHuman(params.lotSize, market.decimals),
+          minQuantity: rawToHuman(params.minQuantity, market.decimals),
+          tickSizeRaw: params.tickSize,
+          lotSizeRaw: params.lotSize,
+          minQuantityRaw: params.minQuantity,
           expirySec: Number(market.expiry),
         },
         tusdcBalance: rawToHuman(balance, market.decimals),
@@ -249,6 +269,58 @@ export function createProductionLiveExecutionDeps(
       } catch (error) {
         throw toBroadcastError(error, "IOC order");
       }
+    },
+
+    placePostOnlyOrder: async ({ privateKey, order }): Promise<ChainWriteResult> => {
+      const { trader } = await makeTrader(config, privateKey);
+      const decimals = order.decimals;
+      const price = parseUnits(String(order.limitPrice), decimals);
+      const quantity = parseUnits(String(order.contracts), decimals);
+      if (quantity <= 0n) {
+        return {
+          filledContracts: 0,
+          status: "failed",
+          errorMessage: "POST_ONLY quantity snaps to zero; no order signed.",
+        };
+      }
+      try {
+        const result = await trader.placeOrder({
+          pool: address(order.poolAddress),
+          side: order.outcome === "YES" ? "BUY_YES" : "BUY_NO",
+          price,
+          quantity,
+          orderType: ORDER_TYPE.POST_ONLY,
+          expireTimestampNs: BigInt(order.expireAtSec) * 1_000_000_000n,
+          autoApprove: false,
+        });
+        const filled = result.fills.reduce(
+          (total, fill) => total + rawToHuman(fill.quantityFilled, decimals),
+          0,
+        );
+        return {
+          transactionHash: result.hash,
+          orderId: result.orderId?.toString(),
+          filledContracts: filled,
+          status:
+            filled <= 0
+              ? "failed"
+              : filled >= order.contracts
+                ? "filled"
+                : "partially_filled",
+        };
+      } catch (error) {
+        throw toBroadcastError(error, "POST_ONLY order");
+      }
+    },
+
+    replenishGas: async ({ userId, walletAddress }) => {
+      const result = await replenishUserSttGas({
+        config,
+        userId,
+        walletAddress,
+      });
+      if (!result.ok) return result;
+      return { ok: true, hash: result.hash };
     },
 
     claimTrade: ({ tradeId, userId }) =>

@@ -135,7 +135,7 @@ export function buildTradeIntent(input: {
     };
   }
 
-  const symbol = `${decision.asset}-${decision.marketId.slice(0, 10)}/${decision.direction}`;
+  const symbol = `${decision.asset}/${decision.direction}`;
 
   return {
     ok: true,

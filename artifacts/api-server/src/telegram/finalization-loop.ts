@@ -19,78 +19,86 @@ import { createInFlightGuard } from "../lib/finalization-guard";
 
 const TICK_MS = 45_000;
 
+export async function runFinalizationTick(
+  bot: Bot,
+  config: AppConfig,
+): Promise<void> {
+  const open = await listOpenTradesForFinalization(config, { limit: 40 });
+  const marketById = new Map<
+    string,
+    ReturnType<typeof readResolvedMarketOnchain>
+  >();
+  for (const trade of open) {
+    try {
+      let marketPromise = marketById.get(trade.marketId);
+      if (!marketPromise) {
+        marketPromise = readResolvedMarketOnchain(config, trade.marketId);
+        marketById.set(trade.marketId, marketPromise);
+      }
+      const market = await marketPromise;
+      await applyMarketResolveFinalization(config, trade, market);
+    } catch (error) {
+      logger.error(
+        {
+          err: error instanceof Error ? error.message : String(error),
+          tradeId: trade.id,
+        },
+        "Market-resolve finalization failed",
+      );
+    }
+  }
+
+  try {
+    await backfillMissingPnl(config);
+  } catch (error) {
+    logger.error(
+      { err: error instanceof Error ? error.message : String(error) },
+      "PnL backfill failed",
+    );
+  }
+
+  const terminal = await listTerminalTradesNeedingNotification(config, {
+    limit: 40,
+  });
+  for (const trade of terminal) {
+    if (!trade.telegramUserId) continue;
+    try {
+      const claimed = await claimFinalizationNotification(config, {
+        tradeId: trade.id,
+        userId: trade.userId,
+      });
+      if (!claimed) continue;
+      const text = buildFinalizationTelegramText(
+        trade,
+        config.explorerTxBaseUrl,
+      );
+      if (!text.trim()) continue;
+      await bot.api.sendMessage(trade.telegramUserId, text, {
+        link_preview_options: { is_disabled: true },
+      });
+    } catch (error) {
+      logger.error(
+        {
+          err: error instanceof Error ? error.message : String(error),
+          tradeId: trade.id,
+        },
+        "Finalization notification failed",
+      );
+    }
+  }
+}
+
 export function startFinalizationLoop(
   bot: Bot,
   config: AppConfig,
-): { stop: () => void } {
+): { stop: () => void; requestTick: () => void } {
   let stopped = false;
+  const runIfIdle = createInFlightGuard();
 
   async function tick() {
     if (stopped) return;
     try {
-      const open = await listOpenTradesForFinalization(config, { limit: 40 });
-      const marketById = new Map<
-        string,
-        ReturnType<typeof readResolvedMarketOnchain>
-      >();
-      for (const trade of open) {
-        try {
-          let marketPromise = marketById.get(trade.marketId);
-          if (!marketPromise) {
-            marketPromise = readResolvedMarketOnchain(config, trade.marketId);
-            marketById.set(trade.marketId, marketPromise);
-          }
-          const market = await marketPromise;
-          await applyMarketResolveFinalization(config, trade, market);
-        } catch (error) {
-          logger.error(
-            {
-              err: error instanceof Error ? error.message : String(error),
-              tradeId: trade.id,
-            },
-            "Market-resolve finalization failed",
-          );
-        }
-      }
-
-      try {
-        await backfillMissingPnl(config);
-      } catch (error) {
-        logger.error(
-          { err: error instanceof Error ? error.message : String(error) },
-          "PnL backfill failed",
-        );
-      }
-
-      const terminal = await listTerminalTradesNeedingNotification(config, {
-        limit: 40,
-      });
-      for (const trade of terminal) {
-        if (!trade.telegramUserId) continue;
-        try {
-          const claimed = await claimFinalizationNotification(config, {
-            tradeId: trade.id,
-            userId: trade.userId,
-          });
-          if (!claimed) continue;
-          const text = buildFinalizationTelegramText(
-            trade,
-            config.explorerTxBaseUrl,
-          );
-          if (!text.trim()) continue;
-          await bot.api.sendMessage(trade.telegramUserId, text, {
-            link_preview_options: { is_disabled: true },
-          });
-        } catch (error) {
-          logger.error(
-            {
-              err: error instanceof Error ? error.message : String(error),
-              tradeId: trade.id,
-            },
-            "Finalization notification failed",
-          );
-        }
-      }
+      await runFinalizationTick(bot, config);
     } catch (error) {
       logger.error(
         { err: error instanceof Error ? error.message : String(error) },
@@ -99,7 +107,6 @@ export function startFinalizationLoop(
     }
   }
 
-  const runIfIdle = createInFlightGuard();
   const handle = setInterval(() => {
     void runIfIdle(tick);
   }, TICK_MS);
@@ -112,6 +119,9 @@ export function startFinalizationLoop(
       stopped = true;
       clearInterval(handle);
       clearTimeout(initial);
+    },
+    requestTick() {
+      void runIfIdle(tick);
     },
   };
 }
