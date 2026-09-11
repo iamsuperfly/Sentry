@@ -4,6 +4,8 @@ Telegram bot that trades DreamDEX BTC/ETH Up/Down event contracts on Somnia Shan
 
 Live bot: [@dreamsentrybot](https://t.me/dreamsentrybot)
 
+Demo video: [Watch the Sentry demo](https://youtube.com/shorts/X74ST7o10tE?feature=share)
+
 ## One-line pitch
 
 Deterministic, per-user Telegram trading on DreamDEX: live WebSocket wakes, a 6-minute fallback, adaptive sizing, and fail-closed execution. No LLM on the trade path.
