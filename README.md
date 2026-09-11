@@ -6,6 +6,8 @@ Sentry creates a per-user testnet wallet, discovers live BTC/ETH Up/Down markets
 
 **[@dreamsentrybot](https://t.me/dreamsentrybot)** — Shannon testnet only. Not intended for real funds.
 
+[Demo video](https://youtube.com/shorts/X74ST7o10tE?feature=share)
+
 ## What it does
 
 1. Onboard a dedicated wallet. Sentry sponsors STT **once** at wallet creation. Later STT is claimed manually via [@somnia_helper_bot](https://t.me/somnia_helper_bot). Daily tUSDC comes from the faucet.
