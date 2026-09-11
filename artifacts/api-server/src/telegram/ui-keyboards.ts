@@ -78,6 +78,8 @@ export function settingsKeyboard(): InlineKeyboard {
     .row()
     .text(BTN.changeProfit, "app:set_profit")
     .row()
+    .text(BTN.changeAdaptive, "app:set_adaptive")
+    .row()
     .text(BTN.backHelp, "app:help");
 }
 
@@ -90,6 +92,16 @@ export function autoKeyboard(on: boolean): InlineKeyboard {
 
 export function backToMenuKeyboard(): InlineKeyboard {
   return new InlineKeyboard().text(BTN.backMenu, "app:menu");
+}
+
+export function walletAddressKeyboard(address: string): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  kb.row({
+    text: "COPY ADDRESS",
+    copy_text: { text: address },
+  } as unknown as { text: string; callback_data: string });
+  kb.text(BTN.backMenu, "app:menu");
+  return kb;
 }
 
 export function positionsKeyboard(): InlineKeyboard {

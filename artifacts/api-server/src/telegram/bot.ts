@@ -25,7 +25,11 @@ import { decryptPrivateKey, encryptPrivateKey } from "../lib/wallet-crypto";
 import { runTelegramTradeCycle } from "../lib/trade-orchestration";
 import { startAutonomousLoop } from "../lib/autonomous-loop";
 import { startBinanceSampler, stopBinanceSampler } from "../lib/binance-sampler";
-import { startProtocolEventBus } from "../lib/protocol-events";
+import {
+  PROTOCOL_ENGINE_DEBOUNCE_MS,
+  startProtocolEventBus,
+} from "../lib/protocol-events";
+import { wsTradingMinIntervalMs } from "../lib/autonomous-policy";
 
 import {
   applySettingsPatch,
@@ -50,6 +54,7 @@ import {
 import {
   formatExecutionModeLabel,
   formatUserFacingTradeFailure,
+  telegramTradeReplyOptions,
 } from "../lib/telegram-trade-format";
 import { formatMultiTradeReply } from "../lib/telegram-multi-trade-reply";
 import { getPerformanceSummary } from "../lib/performance-persist";
@@ -102,13 +107,13 @@ async function confirm(
     });
     if (result.status === "failed") {
       await ctx.reply(
-        `❌ Transaction failed.\n\nReason: Transaction reverted on-chain.\nTransaction: ${hash}`,
+        `❌ Transaction failed.\n\nReason: Transaction reverted on-chain.`,
         { reply_markup: link(config, hash) },
       );
       return false;
     }
     const text = typeof message === "function" ? await message() : message;
-    await ctx.reply(`${text}\n\nTransaction confirmed.\n\nTransaction: ${hash}`, {
+    await ctx.reply(`${text}\n\nTransaction confirmed.`, {
       reply_markup: link(config, hash),
     });
     return true;
@@ -120,7 +125,7 @@ async function confirm(
         "Confirmation is still pending or the RPC became unavailable.",
     }).catch(() => undefined);
     await ctx.reply(
-      `❌ Transaction failed.\n\nReason: ${safeError(error)}\nTransaction: ${hash}`,
+      `❌ Transaction failed.\n\nReason: ${safeError(error)}`,
       { reply_markup: link(config, hash) },
     );
     return false;
@@ -190,7 +195,7 @@ async function runFunding(
     pendingFunding?.transaction_hash
   ) {
     await ctx.reply(
-      `⏳ Your STT sponsorship is still pending.\n\nTransaction: ${pendingFunding.transaction_hash}`,
+      `⏳ Your STT sponsorship is still pending.`,
       { reply_markup: link(config, pendingFunding.transaction_hash) },
     );
     return;
@@ -214,7 +219,7 @@ async function runFunding(
         status: "submitted",
       });
       await ctx.reply(
-        `⏳ Sending ${config.initialGasSponsorAmount} STT...\n\nTransaction: ${funding.hash}`,
+        `⏳ Sending ${config.initialGasSponsorAmount} STT...`,
         { reply_markup: link(config, funding.hash) },
       );
       if (
@@ -315,7 +320,7 @@ async function requestFaucet(ctx: Context, config: AppConfig) {
         status: "submitted",
       });
       await ctx.reply(
-        `⏳ Requesting ${amount} tUSDC.\n\nRemaining today: ${reservation.remaining} tUSDC\nTransaction: ${faucetTx.hash}`,
+        `⏳ Requesting ${amount} tUSDC.\n\nRemaining today: ${reservation.remaining} tUSDC`,
         { reply_markup: link(config, faucetTx.hash) },
       );
       await confirm(ctx, config, reservation.transaction_id, faucetTx.hash, async () => {
@@ -469,7 +474,7 @@ export function createTelegramBot(config: AppConfig): Bot {
           executionMode: settings.executionMode,
           explorerTxBaseUrl: config.explorerTxBaseUrl,
         }),
-        { link_preview_options: { is_disabled: true } },
+        telegramTradeReplyOptions(),
       );
     } catch (error) {
       await ctx.reply(
@@ -490,10 +495,14 @@ export function createTelegramBot(config: AppConfig): Bot {
       [
         "Sentry",
         "",
-        "Use the buttons below the chat.",
-        "Help → Settings to change stake and limits.",
+        "Need STT gas? Claim it with @somnia_helper_bot.",
         "",
-        "TRADE NOW runs one scan. AUTONOMOUS repeats it every 6 minutes.",
+        "Use the buttons below the chat.",
+        "Help → Settings to change stake, limits, and adaptive bands.",
+        "",
+        "TRADE NOW runs one scan. AUTONOMOUS repeats it; live books can also wake a scan.",
+        "A 6-minute loop is the fallback for claims and position management.",
+        "Trading day is UTC (00:00).",
       ].join("\n"),
     ),
   );
@@ -502,9 +511,10 @@ export function createTelegramBot(config: AppConfig): Bot {
       if (!ctx.from) return;
       const userId = await ensureUser(config, ctx.from);
       const positions = await listActivePositionsForDisplay(config, userId);
-      await ctx.reply(formatPositionsMessage(positions, config.explorerTxBaseUrl), {
-        link_preview_options: { is_disabled: true },
-      });
+      await ctx.reply(
+        formatPositionsMessage(positions, config.explorerTxBaseUrl),
+        telegramTradeReplyOptions(),
+      );
     } catch (error) {
       await ctx.reply(`Unable to load positions.\n\nReason: ${safeError(error)}`);
     }
@@ -514,9 +524,10 @@ export function createTelegramBot(config: AppConfig): Bot {
       if (!ctx.from) return;
       const userId = await ensureUser(config, ctx.from);
       const history = await listHistoryForDisplay(config, userId, 5);
-      await ctx.reply(formatHistoryMessage(history, config.explorerTxBaseUrl), {
-        link_preview_options: { is_disabled: true },
-      });
+      await ctx.reply(
+        formatHistoryMessage(history, config.explorerTxBaseUrl),
+        telegramTradeReplyOptions(),
+      );
     } catch (error) {
       await ctx.reply(`Unable to load history.\n\nReason: ${safeError(error)}`);
     }
@@ -626,7 +637,7 @@ export function createTelegramBot(config: AppConfig): Bot {
           "",
           `Trading: ${settings.tradingEnabled ? "enabled" : "disabled"}`,
           `Autonomous: ${settings.autonomousEnabled ? "on" : "off"}${settings.autonomousPausedAt ? " (paused for the day)" : ""}`,
-          `Timezone: ${settings.timezone}`,
+          "Trading day: UTC (00:00)",
           `Mode: ${formatExecutionModeLabel(settings.executionMode)}`,
           `Default stake: ${settings.defaultStake} tUSDC`,
           `Max stake: ${settings.maxTradeStake} tUSDC`,
@@ -690,7 +701,11 @@ export function startTelegramBot(config: AppConfig): Bot {
   const autonomous = startAutonomousLoop(bot, config);
   const protocolEvents = startProtocolEventBus(config, {
     onLifecycle: () => finalization.requestTick(),
-    onTradingOpportunity: () => autonomous.requestTick(0),
+    onTradingOpportunity: (event) =>
+      autonomous.requestTick(
+        wsTradingMinIntervalMs(event.kind, PROTOCOL_ENGINE_DEBOUNCE_MS),
+        "trading",
+      ),
   });
   void bot
     .start({

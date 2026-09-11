@@ -192,6 +192,21 @@ export function formatAdaptiveBandSummary(
     .join(", ");
 }
 
+export function formatAdaptiveBandsPrompt(
+  bands: Parameters<typeof formatAdaptiveBandSummary>[0],
+): string {
+  return [
+    "Adaptive stake bands",
+    "",
+    `Current: ${bands ? "custom" : "system defaults"} (${formatAdaptiveBandSummary(bands)})`,
+    "",
+    "Send new bands, or send reset.",
+    "Example: 0.55:25 0.65:30 0.75:40 0.85:60 80",
+    "The last number is the unbounded fraction (percent or 0-1).",
+    "This only changes the existing band percentages. The sizing formula stays the same.",
+  ].join("\n");
+}
+
 export function parseSettingsCommand(
   raw: string | undefined,
 ): ParsedSettingsCommand {
@@ -353,6 +368,9 @@ export function formatSettingsHelp(system: SystemRiskLimits): string {
   return [
     "Settings (amounts in tUSDC):",
     "",
+    "Need STT gas? Claim it with @somnia_helper_bot.",
+    "Sentry sponsors STT only once, when the wallet is created.",
+    "",
     "/settings — show your configuration",
     "/settings stake 10 — default amount used when you run /trade",
     "/settings max stake 30 — autonomous adaptive ceiling (and /trade cap)",
@@ -398,14 +416,17 @@ export function formatUserSettings(input: {
     `Default stake: ${s.defaultStake} tUSDC (manual /trade)`,
     `Max stake: ${s.maxTradeStake} tUSDC (autonomous adaptive ceiling)`,
     `Max daily loss: ${s.maxDailyLoss} tUSDC`,
-    `Max open positions: ${s.maxOpenPositions}`,
+    `Max open positions: ${s.maxOpenPositions} (your cap; system cap ${input.system.maxOpenPositions})`,
     `Daily profit target: ${profit}`,
     `Adaptive stake: ${s.adaptiveStakeBands ? "custom" : "system defaults"} (${formatAdaptiveBandSummary(s.adaptiveStakeBands)})`,
+    "Trading day: UTC (00:00)",
     "",
     `System limits: min stake ${input.system.minStake}, max stake ${input.system.maxStake}, max positions ${input.system.maxOpenPositions}, max daily loss ${input.system.maxDailyLoss}`,
   ];
   if (input.openPositionCount !== undefined) {
-    lines.push(`Open positions now: ${input.openPositionCount}`);
+    lines.push(
+      `Open positions now: ${input.openPositionCount} / ${s.maxOpenPositions} (system cap ${input.system.maxOpenPositions})`,
+    );
   }
   if (input.realizedPnlToday !== undefined) {
     lines.push(`Realized PnL today (UTC): ${input.realizedPnlToday} tUSDC`);

@@ -28,11 +28,13 @@ import {
   resolveOutcomeTokenAddress,
 } from "./resolve-outcome-token.ts";
 import { rememberWindow } from "./market-window.ts";
+import { shouldShowInPositions } from "./position-lifecycle.ts";
 
 export type EarlyExitAttempt = {
   tradeId: string;
   marketId: string;
   symbol?: string;
+  direction?: string;
   status: "exited" | "held" | "failed" | "partial";
   code?: string;
   reason: string;
@@ -76,24 +78,33 @@ export async function listManageablePositions(
     .eq("user_id", userId)
     .in("status", ["filled", "partially_filled"]);
   if (error) throw new Error("Unable to list positions for early-exit.");
-  return (data ?? []).map((row) => {
-    const r = row as Record<string, unknown>;
-    const decision = r.decision;
-    return {
-      tradeId: String(r.id),
-      marketId: String(r.market_id),
-      symbol: String(r.symbol ?? ""),
-      direction: String(r.direction ?? ""),
-      stake: Number(r.stake_usdso ?? 0),
-      filledContracts: num(r.filled_contracts),
-      entryPrice: num(r.limit_price),
-      filledAt: (r.filled_at as string | null) ?? null,
-      submittedAt: (r.submitted_at as string | null) ?? null,
-      marketExpiry: decisionField(decision, "expiry"),
-      intervalSec: decisionField(decision, "intervalSec"),
-      status: String(r.status),
-    };
-  });
+  const nowSec = Math.floor(Date.now() / 1000);
+  return (data ?? [])
+    .map((row) => {
+      const r = row as Record<string, unknown>;
+      const decision = r.decision;
+      return {
+        tradeId: String(r.id),
+        marketId: String(r.market_id),
+        symbol: String(r.symbol ?? ""),
+        direction: String(r.direction ?? ""),
+        stake: Number(r.stake_usdso ?? 0),
+        filledContracts: num(r.filled_contracts),
+        entryPrice: num(r.limit_price),
+        filledAt: (r.filled_at as string | null) ?? null,
+        submittedAt: (r.submitted_at as string | null) ?? null,
+        marketExpiry: decisionField(decision, "expiry"),
+        intervalSec: decisionField(decision, "intervalSec"),
+        status: String(r.status),
+      };
+    })
+    .filter((position) =>
+      shouldShowInPositions({
+        status: position.status,
+        marketExpiry: position.marketExpiry,
+        nowSec,
+      }),
+    );
 }
 
 async function markCancelled(input: {
@@ -181,6 +192,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "held",
             code: "market_not_trading",
             reason: `On-chain status ${onchain.status} is not Trading.`,
@@ -210,6 +222,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "held",
             code: decision.code,
             reason: decision.reason,
@@ -230,6 +243,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "held",
             code: gridParsed.code,
             reason: gridParsed.reason,
@@ -242,6 +256,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "held",
             code: "invalid_sell",
             reason: snapped.reason,
@@ -284,6 +299,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "held",
             code: plan.code,
             reason: plan.reason,
@@ -301,6 +317,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "held",
             code: "invalid_sell",
             reason: "Could not encode a valid SELL price/size.",
@@ -314,6 +331,7 @@ export async function manageOpenPositions(input: {
               tradeId: position.tradeId,
               marketId: position.marketId,
               symbol: position.symbol,
+              direction: position.direction,
               status: "held",
               code: "invalid_sell",
               reason: "Complete-set mint amount is zero; no order signed.",
@@ -345,6 +363,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "failed",
             code: "ioc_no_fill",
             reason: "Early-exit sell did not fill. Position left open.",
@@ -391,6 +410,7 @@ export async function manageOpenPositions(input: {
             tradeId: position.tradeId,
             marketId: position.marketId,
             symbol: position.symbol,
+            direction: position.direction,
             status: "partial",
             reason: "Partial early-exit sell; remainder stays open.",
             transactionHash: result.hash,
@@ -414,6 +434,7 @@ export async function manageOpenPositions(input: {
           tradeId: position.tradeId,
           marketId: position.marketId,
           symbol: position.symbol,
+          direction: position.direction,
           status: "exited",
           reason: decision.reason,
           transactionHash: result.hash,
@@ -433,6 +454,7 @@ export async function manageOpenPositions(input: {
           tradeId: position.tradeId,
           marketId: position.marketId,
           symbol: position.symbol,
+          direction: position.direction,
           status: "failed",
           code: "exit_error",
           reason: message,
@@ -457,7 +479,7 @@ export function formatEarlyExitMessage(attempts: EarlyExitAttempt[]): string | n
         tradeId: a.tradeId,
         marketId: a.marketId,
         symbol: a.symbol,
-        direction: a.symbol?.toLowerCase().includes("down") ? "down" : "up",
+        direction: a.direction ?? (a.symbol?.toLowerCase().includes("down") ? "down" : "up"),
         stake: 0,
         filledContracts: null,
         entryPrice: null,

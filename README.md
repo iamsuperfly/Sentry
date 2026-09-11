@@ -2,17 +2,17 @@
 
 Telegram trading assistant for **DreamDEX Event Contracts** on **Somnia Shannon testnet** (chain ID `50312`).
 
-Sentry creates a per-user testnet wallet, discovers live BTC/ETH Up/Down markets, and places IOC trades either on demand or on a 6-minute autonomous loop. Every live decision is deterministic. There is no LLM on the trading path.
+Sentry creates a per-user testnet wallet, discovers live BTC/ETH Up/Down markets, and places live orders either on demand or autonomously. Every live decision is deterministic. There is no LLM on the trading path.
 
 **[@dreamsentrybot](https://t.me/dreamsentrybot)** — Shannon testnet only. Not intended for real funds.
 
 ## What it does
 
-1. Onboard a dedicated wallet (STT gas sponsor + daily tUSDC faucet).
+1. Onboard a dedicated wallet. Sentry sponsors STT **once** at wallet creation. Later STT is claimed manually via [@somnia_helper_bot](https://t.me/somnia_helper_bot). Daily tUSDC comes from the faucet.
 2. Discover tradable BTC/ETH Event Contracts via `@somnia-chain/markets-sdk` `0.29.0`.
-3. Apply timing gates, then pick **one** market (nearest expiry among ENTERs). Each autonomous scan reports `Trades: 1` because it executes that single selected ENTER — not because discovery only found one market.
+3. Apply timing gates, then rank ENTER candidates. Autonomous scans fill available slots (`min(userMax, systemMax) − openCount`) with independently sized trades. Manual TRADE NOW places one trade.
 4. Decide YES/NO from the book (5m/15m+) or a Binance five-print vote (1m).
-5. Size the stake, run risk checks, submit an IOC order.
+5. Size the stake, run risk checks, then TAKE/IOC when the fresh book is executable. Otherwise rest POST_ONLY at the intended snapped limit when that would not cross. Fail closed if it would.
 6. Manage, settle, and claim.
 
 ## Trading pipeline
@@ -29,9 +29,11 @@ DreamDEX listing (live binaries, limit 100)
        ├─ manual /trade: user defaultStake
        └─ autonomous: adaptive fraction of maxTradeStake from entry vs 0.50
   → evaluateRisk (min/max, daily loss, open slots, collateral)
-  → IOC execution
+  → TAKE/IOC, or POST_ONLY if the fresh book is not executable and would not cross
   → positions / early-loss exit / settlement / claim
 ```
+
+Live DreamDEX WebSocket events wake the **same** engine (discovery → strategy → risk → execution). A 6-minute loop is the fallback for claims, early-exit, and reconciliation. WebSocket ticks do not create a second strategy.
 
 ### Timing
 - **1m:** `left >= 30s`
@@ -46,17 +48,28 @@ Order-book edge-taker: YES ask ≤ 0.42 → YES; else NO ask ≤ 0.42 → NO; el
 
 ### Stake
 - **Manual** TRADE NOW / `/trade`: `defaultStake` (e.g. 30 tUSDC).
-- **Autonomous:** after the entry price is known, `edge = 0.50 − entryPrice`, band `0.50 + edge` into 25/30/40/60/80% of `maxTradeStake`, then clip through `evaluateRisk`. Example with max 50: 12.5 / 15 / 20 / 30 / 40 tUSDC.
+- **Autonomous:** after the entry price is known, `edge = 0.50 − entryPrice`, band `0.50 + edge` into 25/30/40/60/80% of `maxTradeStake`, then clip through `evaluateRisk`. Users can customize those existing bands from Settings; unconfigured users keep the system defaults.
 
 Risk always applies: min/max stake, daily loss, max open positions, collateral, book preflight. `ENABLE_LIVE_EXECUTION` must be true for chain writes.
+
+Open-position counting is expiry-aware: stale submitted/filled rows on expired markets do not consume live slots. Display, `/trade`, and autonomous scans share that count. The user cap is independent of the system cap (default user max 1, system max 10); enforcement is `min(user, system)`.
 
 ## Features
 
 - Telegram buttons: TRADE NOW, AUTONOMOUS, POSITIONS, PERFORMANCE, WALLET, HELP
 - Commands: `/trade`, `/auto`, `/settings`, `/faucet`, `/status`, `/positions`, `/history`, `/claim`, `/leaderboard`, `/fund`, `/privatekey`. `/stop` pauses autonomous only
-- Autonomous 6-minute scan (one ENTER per scan) + early-loss management + claim sweep. Pauses at UTC midnight until TRADE NOW or `/auto on`
-- IOC execution, partial fills, zero-fill quieting
+- Autonomous trading: live WebSocket wakes plus a 6-minute fallback. Pauses at UTC midnight until TRADE NOW or `/auto on`
+- IOC TAKE when the book is executable; POST_ONLY rest when it is not, never crossing
 - Settlement PnL from on-chain `winningOutcome` + filled contracts; `/claim` redeems win/void ERC-6909 balances as tUSDC
+- Shared process-level Somnia read client (one WebSocket). Per-user write sessions are opened and closed per submit
+- Trading day is UTC (00:00) for PnL, halt, counters, and the end-of-day report
+
+## Wallet and gas
+
+- One wallet per Telegram user. The user signs; treasury never trades.
+- Initial STT sponsorship happens only during wallet creation.
+- Additional STT is claimed with [@somnia_helper_bot](https://t.me/somnia_helper_bot). Sentry does not auto-replenish gas after that.
+- WALLET shows the full copyable address.
 
 ## Setup
 
@@ -94,7 +107,7 @@ Read-only: `GET /api/healthz`, `/api/readyz`, `/api/dreamdex/markets`, `/api/dre
 - tUSDC: `0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E`
 - OutcomeToken6909: `0xB52c5934113Af5c0Bb20eb3C72290C8215f755b9`
 
-Event contracts can go to zero. IOC orders may not fill. Autonomous mode keeps scanning until a daily halt, a position cap, or you pause it.
+Event contracts can go to zero. IOC orders may not fill. POST_ONLY may rest unfilled until lock. Autonomous mode keeps scanning until a daily halt, a position cap, or you pause it.
 
 ## Stack
 

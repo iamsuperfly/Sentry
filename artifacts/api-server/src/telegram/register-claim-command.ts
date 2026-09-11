@@ -5,6 +5,7 @@ import {
   formatClaimMessage,
   runUserClaimScan,
 } from "../lib/claim-positions";
+import { telegramTradeReplyOptions } from "../lib/telegram-trade-format";
 
 function safeError(error: unknown) {
   const message = error instanceof Error ? error.message : "Unknown error";
@@ -30,9 +31,7 @@ export function registerClaimCommand(bot: Bot, config: AppConfig): void {
         walletAddress: wallet.address,
         encryptedPrivateKey: wallet.encrypted_private_key,
       });
-      await ctx.reply(formatClaimMessage(attempts), {
-        link_preview_options: { is_disabled: true },
-      });
+      await ctx.reply(formatClaimMessage(attempts, config.explorerTxBaseUrl), telegramTradeReplyOptions());
     } catch (error) {
       await ctx.reply(
         `Unable to claim positions.\n\nReason: ${safeError(error)}`,

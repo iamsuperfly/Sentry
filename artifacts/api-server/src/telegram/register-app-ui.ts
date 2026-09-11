@@ -37,9 +37,17 @@ import {
   formatPositionsMessage,
   listActivePositionsForDisplay,
 } from "../lib/position-display";
-import { formatUserFacingTradeFailure } from "../lib/telegram-trade-format";
+import {
+  formatUserFacingTradeFailure,
+  telegramTradeReplyOptions,
+} from "../lib/telegram-trade-format";
 import { formatMultiTradeReply } from "../lib/telegram-multi-trade-reply";
-import { shouldRequestLiveExecution } from "../lib/telegram-settings";
+import {
+  applySettingsPatch,
+  formatAdaptiveBandsPrompt,
+  parseSettingsCommand,
+  shouldRequestLiveExecution,
+} from "../lib/telegram-settings";
 import { runTelegramTradeCycle } from "../lib/trade-orchestration";
 import { setAutonomousEnabled } from "../lib/autonomous-state";
 import { formatClaimMessage, runUserClaimScan } from "../lib/claim-positions";
@@ -60,6 +68,7 @@ import {
   mainReplyKeyboard,
   positionsKeyboard,
   settingsKeyboard,
+  walletAddressKeyboard,
 } from "./ui-keyboards";
 
 const tradeActive = new Set<number>();
@@ -284,7 +293,7 @@ export async function runTradeNow(ctx: Context, config: AppConfig) {
         explorerTxBaseUrl: config.explorerTxBaseUrl,
       }),
       {
-        link_preview_options: { is_disabled: true },
+        ...telegramTradeReplyOptions(),
       },
     );
   } catch (error) {
@@ -307,7 +316,7 @@ async function showAuto(ctx: Context, config: AppConfig) {
   const on = settings.autonomousEnabled;
   await ctx.reply(
     on
-      ? "Autonomous trading is running.\n\nThe bot scans every 6 minutes and manages eligible positions automatically."
+      ? "Autonomous trading is running.\n\nLive DreamDEX events can wake a trading scan. A 6-minute loop is the fallback for claims and position management."
       : "Autonomous trading is paused.",
     { reply_markup: autoKeyboard(on) },
   );
@@ -318,7 +327,7 @@ async function setAuto(ctx: Context, config: AppConfig, enabled: boolean) {
   await setAutonomousEnabled(config, settings.userId, enabled, ctx.chat?.id ?? ctx.from!.id);
   await ctx.reply(
     enabled
-      ? "Autonomous trading is running.\n\nThe bot scans every 6 minutes and manages eligible positions automatically."
+      ? "Autonomous trading is running.\n\nLive DreamDEX events can wake a trading scan. A 6-minute loop is the fallback for claims and position management."
       : "Autonomous trading is paused.",
     { reply_markup: mainReplyKeyboard(enabled) },
   );
@@ -332,7 +341,7 @@ async function showPositions(ctx: Context, config: AppConfig) {
       ? "No open positions."
       : formatPositionsMessage(positions, config.explorerTxBaseUrl);
   await ctx.reply(text, {
-    link_preview_options: { is_disabled: true },
+    ...telegramTradeReplyOptions(),
     reply_markup: positionsKeyboard(),
   });
 }
@@ -348,9 +357,12 @@ async function showPerformance(ctx: Context, config: AppConfig) {
   const decided = performance.wins + performance.losses;
   const winRate = decided > 0 ? `${Math.round((performance.wins / decided) * 100)}%` : "\u2014";
   await ctx.reply(
-    [formatPerformanceMessage(performance), "", `Win rate: ${winRate}`, `Total decided trades: ${decided}`].join(
-      "\n",
-    ),
+    [
+      formatPerformanceMessage(performance),
+      "",
+      `Win rate (all time): ${winRate}`,
+      `Total decided trades (all time): ${decided}`,
+    ].join("\n"),
     { reply_markup: backToMenuKeyboard() },
   );
 }
@@ -362,17 +374,22 @@ async function showWallet(ctx: Context, config: AppConfig) {
     return;
   }
   const current = await balances(config, wallet.address);
-  const short = `${wallet.address.slice(0, 6)}\u2026${wallet.address.slice(-4)}`;
   await ctx.reply(
     [
       "Wallet",
       "",
-      `Address: ${short}`,
+      `Address: <code>${wallet.address}</code>`,
       `tUSDC: ${current.tusdc}`,
       `STT: ${current.stt}`,
       "Network: Somnia Shannon testnet",
+      "",
+      "Need STT gas? Claim it with @somnia_helper_bot.",
+      "Sentry sponsors STT only once, when the wallet is created.",
     ].join("\n"),
-    { reply_markup: backToMenuKeyboard() },
+    {
+      parse_mode: "HTML",
+      reply_markup: walletAddressKeyboard(wallet.address),
+    },
   );
 }
 
@@ -390,8 +407,8 @@ async function runClaim(ctx: Context, config: AppConfig) {
     walletAddress: wallet.address,
     encryptedPrivateKey: wallet.encrypted_private_key,
   });
-  await ctx.reply(formatClaimMessage(attempts), {
-    link_preview_options: { is_disabled: true },
+  await ctx.reply(formatClaimMessage(attempts, config.explorerTxBaseUrl), {
+    ...telegramTradeReplyOptions(),
     reply_markup: backToMenuKeyboard(),
   });
 }
@@ -466,6 +483,33 @@ export async function handleConversationText(
     return true;
   }
 
+  if (state.kind === "adaptive_bands") {
+    const current = await getUserSettingsForTelegram(config, identityFrom(ctx));
+    const parsed = parseSettingsCommand(`adaptive ${text}`);
+    if (parsed.kind === "error") {
+      await ctx.reply(`${parsed.reason}\n\n${formatAdaptiveBandsPrompt(current.adaptiveStakeBands)}`);
+      return true;
+    }
+    if (parsed.kind === "show" || parsed.kind === "help") {
+      await ctx.reply(formatAdaptiveBandsPrompt(current.adaptiveStakeBands));
+      return true;
+    }
+    if (parsed.kind !== "patch") {
+      await ctx.reply(formatAdaptiveBandsPrompt(current.adaptiveStakeBands));
+      return true;
+    }
+    const applied = applySettingsPatch(current, parsed.patch, config.systemLimits);
+    if (!applied.ok) {
+      await ctx.reply(`${applied.reason}\n\n${formatAdaptiveBandsPrompt(current.adaptiveStakeBands)}`);
+      return true;
+    }
+    await saveUserSettingsForTelegram(config, identityFrom(ctx), applied.settings);
+    clearConversation(ctx.from.id);
+    await ctx.reply(parsed.label);
+    await showSettings(ctx, config);
+    return true;
+  }
+
   if (state.kind === "setting") {
     const current = await getUserSettingsForTelegram(config, identityFrom(ctx));
     const applied = tryApplySetting(current, state.field, text, config.systemLimits);
@@ -508,7 +552,9 @@ export function registerAppUi(bot: Bot, config: AppConfig): void {
         "Trading",
         "",
         "TRADE NOW runs one market scan and places trades when conditions match.",
-        "AUTONOMOUS repeats that scan every 6 minutes.",
+        "AUTONOMOUS repeats that scan. Live DreamDEX events can also wake a trading scan.",
+        "A 6-minute loop is the fallback for claims and position management.",
+        "Trading day is UTC (00:00).",
       ].join("\n"),
       { reply_markup: helpKeyboard() },
     );
@@ -519,10 +565,15 @@ export function registerAppUi(bot: Bot, config: AppConfig): void {
       [
         "How it works",
         "",
-        "1. Get test tokens.",
-        "2. Set your stake and limits.",
+        "Need STT gas? Claim it with @somnia_helper_bot.",
+        "Sentry sponsors STT only once, when the wallet is created.",
+        "",
+        "1. Get test tokens (tUSDC faucet).",
+        "2. Set your stake, limits, and adaptive bands.",
         "3. Tap TRADE NOW or start autonomous trading.",
         "4. Claim settled wins from Positions or Help.",
+        "",
+        "Trading day is UTC (00:00).",
       ].join("\n"),
       { reply_markup: helpKeyboard() },
     );
@@ -570,6 +621,12 @@ export function registerAppUi(bot: Bot, config: AppConfig): void {
   bot.callbackQuery("app:set_profit", async (ctx) => {
     await ctx.answerCallbackQuery();
     await askSetting(ctx, "dailyProfitTarget", config);
+  });
+  bot.callbackQuery("app:set_adaptive", async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const settings = await getUserSettingsForTelegram(config, identityFrom(ctx));
+    setConversation(ctx.from!.id, { kind: "adaptive_bands" });
+    await ctx.reply(formatAdaptiveBandsPrompt(settings.adaptiveStakeBands));
   });
   bot.callbackQuery("app:history", async (ctx) => {
     await ctx.answerCallbackQuery();

@@ -8,7 +8,10 @@ export type ClaimAttemptView = {
   marketId?: string;
 };
 
-function formatClaimLine(a: ClaimAttemptView & { marketId?: string }): string {
+function formatClaimLine(
+  a: ClaimAttemptView & { marketId?: string },
+  explorerTxBaseUrl?: string,
+): string {
   const head = `${a.symbol} ${a.direction.toUpperCase()}`;
   const lines = [`${head}`];
   if (a.marketId) lines.push(`   Market ID: ${a.marketId}`);
@@ -16,11 +19,17 @@ function formatClaimLine(a: ClaimAttemptView & { marketId?: string }): string {
   if (a.payoutEstimate != null) {
     lines.push(`   Payout: ${a.payoutEstimate} tUSDC`);
   }
-  if (a.transactionHash) lines.push(`   Tx: ${a.transactionHash}`);
+  if (a.transactionHash && explorerTxBaseUrl) {
+    const href = `${explorerTxBaseUrl.replace(/\/$/, "")}/${a.transactionHash}`.replace(/&/g, "&");
+    lines.push(`   <a href="${href}">View transaction</a>`);
+  }
   return lines.join("\n");
 }
 
-export function formatClaimMessage(attempts: ClaimAttemptView[]): string {
+export function formatClaimMessage(
+  attempts: ClaimAttemptView[],
+  explorerTxBaseUrl?: string,
+): string {
   const claimed = attempts.filter((a) => a.status === "claimed");
   if (claimed.length === 0) {
     return "No new claims.";
@@ -28,7 +37,7 @@ export function formatClaimMessage(attempts: ClaimAttemptView[]): string {
   return [
     claimed.length === 1 ? "Claimed 1 position" : `Claimed ${claimed.length} positions`,
     "",
-    ...claimed.map((a, i) => `${i + 1}. ${formatClaimLine(a)}`),
+    ...claimed.map((a, i) => `${i + 1}. ${formatClaimLine(a, explorerTxBaseUrl)}`),
   ].join("\n");
 }
 

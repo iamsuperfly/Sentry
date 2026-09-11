@@ -152,14 +152,21 @@ function signed(n: number): string {
   return `${n > 0 ? "+" : ""}${n}`;
 }
 
+function dailyWinRate(wins: number, losses: number): string {
+  const decided = wins + losses;
+  if (decided <= 0) return "Win rate: —";
+  return `Win rate: ${wins}/${decided} (${Math.round((wins / decided) * 100)}%)`;
+}
+
 export function formatPerformanceMessage(summary: PerformanceSummary): string {
   return [
     "Performance (Shannon testnet)",
     "",
-    "Today",
+    "Today (UTC)",
     `PnL: ${signed(summary.dailyPnl)} tUSDC`,
     `Wins: ${summary.dailyWins}`,
     `Losses: ${summary.dailyLosses}`,
+    dailyWinRate(summary.dailyWins, summary.dailyLosses),
     `Stakes: ${summary.dailyStakes} tUSDC`,
     `Payouts: ${summary.dailyPayouts} tUSDC`,
     "",

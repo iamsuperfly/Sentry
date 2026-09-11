@@ -125,30 +125,41 @@ export function formatDayHaltMessage(input: {
   }
 }
 
+export function dailyWinRateLine(wins: number, losses: number): string {
+  const decided = wins + losses;
+  if (decided <= 0) return "Win rate: —";
+  const pct = Math.round((wins / decided) * 100);
+  return `Win rate: ${wins}/${decided} (${pct}%)`;
+}
+
 export function formatAutonomousDailyReport(input: {
   activity: DayActivity;
   dailyPnl: number;
   wins: number;
   losses: number;
+  dailyStakes?: number;
+  dailyPayouts?: number;
   unclaimedPositions: number;
   unclaimedValue: number;
 }): string {
   return [
     "Autonomous trading stopped for the UTC day.",
     "",
-    "Daily report",
+    "Daily report (UTC)",
     `Trades attempted: ${input.activity.attempted}`,
     `Filled: ${input.activity.filled}`,
     `Failed: ${input.activity.failed}`,
     `Cancelled: ${input.activity.cancelled}`,
     `Wins: ${input.wins}`,
     `Losses: ${input.losses}`,
+    dailyWinRateLine(input.wins, input.losses),
+    input.dailyStakes !== undefined ? `Stakes: ${input.dailyStakes} tUSDC` : "",
+    input.dailyPayouts !== undefined ? `Payouts: ${input.dailyPayouts} tUSDC` : "",
     `PnL: ${signed(input.dailyPnl)} tUSDC`,
-    `Unclaimed positions: ${input.unclaimedPositions}`,
-    `Unclaimed value: ${input.unclaimedValue} tUSDC`,
+    `Still unclaimed (all time): ${input.unclaimedPositions} positions / ${input.unclaimedValue} tUSDC`,
     "",
     "Send /trade or /auto on to start again tomorrow.",
-  ].join("\n");
+  ].filter((line) => line !== "").join("\n");
 }
 
 export function summarizeDayActivity(

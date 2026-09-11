@@ -4,6 +4,7 @@ import {
   classifyFinalization,
   estimateUnrealizedPnl,
   explorerTxUrl,
+  formatExplorerLinkLine,
   formatExecutionModeLabel,
   formatFinalizationMessage,
   formatHistoryBlock,
@@ -63,6 +64,16 @@ describe("explorer URL", () => {
       explorerTxUrl("https://shannon-explorer.somnia.network/tx/", "0xabc"),
       "https://shannon-explorer.somnia.network/tx/0xabc",
     );
+  });
+
+  it("renders clickable View transaction text, not a raw URL", () => {
+    const line = formatExplorerLinkLine(
+      "https://shannon-explorer.somnia.network/tx",
+      "0xabc",
+    );
+    assert.match(line ?? "", />View transaction</);
+    assert.match(line ?? "", /href="https:\/\/shannon-explorer.somnia.network\/tx\/0xabc"/);
+    assert.doesNotMatch(line ?? "", /^Tx:/);
   });
 });
 

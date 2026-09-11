@@ -147,9 +147,24 @@ export function classifyBookDelta(input: {
   return "book_change";
 }
 
-function debounceMsFor(opportunity: ProtocolEvent | null, lifecycle: ProtocolEvent | null): number {
-  if (opportunity?.kind === "book_change" && !lifecycle) return 1_000;
-  return 8_000;
+/** Coalesce SDK store mutations so subscribeLive cannot busy-loop the event loop. */
+export const LIVE_SCAN_COALESCE_MS = 250;
+/** Engine wake coalescing. book_change uses the same window so WS cannot 1Hz-scan. */
+export const PROTOCOL_ENGINE_DEBOUNCE_MS = 8_000;
+
+export function shouldCoalesceLiveScan(
+  lastStartedAtMs: number | null,
+  nowMs: number,
+  minGapMs = LIVE_SCAN_COALESCE_MS,
+): boolean {
+  if (lastStartedAtMs === null) return false;
+  return nowMs - lastStartedAtMs < minGapMs;
+}
+
+function debounceMsFor(_opportunity: ProtocolEvent | null, _lifecycle: ProtocolEvent | null): number {
+  void _opportunity;
+  void _lifecycle;
+  return PROTOCOL_ENGINE_DEBOUNCE_MS;
 }
 
 function readLiveBook(
@@ -178,7 +193,10 @@ export function startProtocolEventBus(
   let queuedLifecycle: ProtocolEvent | null = null;
   let queuedOpportunity: ProtocolEvent | null = null;
   let unsubscribe: (() => void) | null = null;
+  let watchHandle: { stop?: () => unknown } | null = null;
   let stopped = false;
+  let scanTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastScanStartedAt: number | null = null;
 
   const flush = () => {
     debounce = null;
@@ -203,6 +221,10 @@ export function startProtocolEventBus(
 
   const scan = () => {
     if (stopped) return;
+    const nowMs = Date.now();
+    if (shouldCoalesceLiveScan(lastScanStartedAt, nowMs)) return;
+    lastScanStartedAt = nowMs;
+    const t0 = nowMs;
     let rows: LiveRow[] = [];
     try {
       rows = exchange.client.getLiveMarkets() as unknown as LiveRow[];
@@ -239,13 +261,35 @@ export function startProtocolEventBus(
         enqueue({ kind: "book_change", ...window });
       }
     }
+    const queued = queuedOpportunity?.kind ?? queuedLifecycle?.kind;
+    if (queued) {
+      logger.info(
+        {
+          markets: rows.length,
+          ms: Date.now() - t0,
+          queuedOpportunity: queuedOpportunity?.kind ?? null,
+          queuedLifecycle: queuedLifecycle?.kind ?? null,
+        },
+        "protocol live scan queued engine wake",
+      );
+    }
+  };
+
+  const scheduleScan = () => {
+    if (stopped) return;
+    if (scanTimer) return;
+    scanTimer = setTimeout(() => {
+      scanTimer = null;
+      scan();
+    }, LIVE_SCAN_COALESCE_MS);
+    scanTimer.unref?.();
   };
 
   void (async () => {
     try {
       const handle = await exchange.client.watchMarkets({ discover: true });
-      void handle;
-      unsubscribe = exchange.client.subscribeLive(() => scan());
+      watchHandle = handle as { stop?: () => unknown };
+      unsubscribe = exchange.client.subscribeLive(() => scheduleScan());
       logger.info("DreamDEX protocol event bus started (shared WS)");
     } catch (error) {
       logger.warn(
@@ -259,8 +303,14 @@ export function startProtocolEventBus(
     stop() {
       stopped = true;
       if (debounce) clearTimeout(debounce);
+      if (scanTimer) clearTimeout(scanTimer);
       try {
         unsubscribe?.();
+      } catch {
+        /* ignore */
+      }
+      try {
+        watchHandle?.stop?.();
       } catch {
         /* ignore */
       }

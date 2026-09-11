@@ -32,16 +32,13 @@ import {
   evaluatePreflightBook,
   type PreflightBook,
 } from "./preflight-book.ts";
-import { looksLikeInsufficientGas } from "./insufficient-gas.ts";
+import { looksLikeInsufficientGas, looksLikePostOnlyWouldCross } from "./insufficient-gas.ts";
 
 /** Verified Shannon Event Contract test collateral. */
 export const SHANNON_TUSDC =
   "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E" as const;
 
 export const ONCHAIN_TRADING_STATUS = 1;
-
-export const GAS_SPONSORED_NOTE =
-  "Sentry sponsored STT gas for this wallet and retried the order.";
 
 export const POST_ONLY_UNAVAILABLE =
   "POST_ONLY is required for this book but the maker path is unavailable.";
@@ -165,11 +162,6 @@ export type LiveExecutionDeps = {
     privateKey: string;
     order: Omit<IocOrderDraft, "orderType"> & { orderType: "POST_ONLY" };
   }) => Promise<ChainWriteResult>;
-  /** One-shot STT top-up after a genuine insufficient-gas failure. */
-  replenishGas?: (input: {
-    userId: string;
-    walletAddress: string;
-  }) => Promise<{ ok: true; hash: string } | { ok: false; code: string; reason: string }>;
 };
 
 export function mapDirectionToOutcome(direction: "up" | "down"): "YES" | "NO" {
@@ -512,6 +504,7 @@ export async function submitLiveOrder(input: {
           outcome: order.outcome,
           limitPrice: order.limitPrice,
           book,
+          decimals: order.decimals,
         })) {
           const reason = `POST_ONLY would cross at limit ${order.limitPrice}.`;
           await input.deps.updateTrade({
@@ -583,56 +576,10 @@ export async function submitLiveOrder(input: {
     };
 
     let placed: ChainWriteResult;
-    let replenished = false;
-    const tryReplenish = async (): Promise<LiveSubmitResult | null> => {
-      if (replenished || !input.deps.replenishGas) return null;
-      const gas = await input.deps.replenishGas({
-        userId: input.intent.userId,
-        walletAddress: input.intent.walletAddress,
-      });
-      replenished = true;
-      if (!gas.ok) {
-        await input.deps.updateTrade({
-          tradeId: input.tradeId,
-          userId: input.intent.userId,
-          status: "failed",
-          errorMessage: gas.reason,
-          fromStatus: "submitted",
-        });
-        return {
-          ok: false,
-          code: gas.code,
-          reason: gas.reason,
-          tradeId: input.tradeId,
-          status: "failed",
-        };
-      }
-      return null;
-    };
-
     try {
       placed = await writeOnce();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message.slice(0, 240) : "Unknown submit error";
-      if (looksLikeInsufficientGas("insufficient_gas", message)) {
-        const failed = await tryReplenish();
-        if (failed) return failed;
-        if (!replenished) throw error;
-        placed = await writeOnce();
-      } else {
-        throw error;
-      }
-    }
-
-    if (
-      placed.status === "failed" &&
-      looksLikeInsufficientGas("insufficient_gas", placed.errorMessage) &&
-      !replenished
-    ) {
-      const failed = await tryReplenish();
-      if (failed) return failed;
-      placed = await writeOnce();
+      throw error;
     }
 
     if (placed.status === "resting") {
@@ -683,12 +630,7 @@ export async function submitLiveOrder(input: {
       };
     }
 
-    const errorMessage =
-      nextStatus === "failed"
-        ? placed.errorMessage
-        : replenished
-          ? GAS_SPONSORED_NOTE
-          : placed.errorMessage;
+    const errorMessage = placed.errorMessage;
 
     await input.deps.updateTrade({
       tradeId: input.tradeId,
@@ -706,13 +648,17 @@ export async function submitLiveOrder(input: {
         "insufficient_gas",
         placed.errorMessage,
       );
+      const wouldCross = looksLikePostOnlyWouldCross(
+        "post_only_would_cross",
+        placed.errorMessage,
+      );
       return {
         ok: false,
         code: gasFail
-          ? replenished
-            ? "gas_retry_failed"
-            : "insufficient_gas"
-          : "submission_failed",
+          ? "insufficient_gas"
+          : wouldCross
+            ? "post_only_would_cross"
+            : "submission_failed",
         reason: placed.errorMessage ?? "Order submission failed.",
         tradeId: input.tradeId,
         status: "failed",
@@ -743,6 +689,22 @@ export async function submitLiveOrder(input: {
       return {
         ok: false,
         code: "insufficient_gas",
+        reason: message,
+        tradeId: input.tradeId,
+        status: "failed",
+      };
+    }
+    if (looksLikePostOnlyWouldCross("post_only_would_cross", message)) {
+      await input.deps.updateTrade({
+        tradeId: input.tradeId,
+        userId: input.intent.userId,
+        status: "failed",
+        errorMessage: message,
+        fromStatus: claimed ? "submitted" : "pending",
+      });
+      return {
+        ok: false,
+        code: "post_only_would_cross",
         reason: message,
         tradeId: input.tradeId,
         status: "failed",

@@ -170,8 +170,8 @@ test("performance message is compact", () => {
     dailyVoids: 0,
     dailySettledTrades: 4,
   });
-  assert.match(text, /Today/);
-  assert.doesNotMatch(text, /Today \(UTC\)/);
+  assert.match(text, /Today \(UTC\)/);
+  assert.match(text, /Win rate: 3\/4 \(75%\)/);
   assert.match(text, /\+12\.4 tUSDC/);
   assert.match(text, /All time/);
   assert.match(text, /\+47\.85 tUSDC/);

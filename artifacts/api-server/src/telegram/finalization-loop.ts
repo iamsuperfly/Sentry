@@ -16,6 +16,7 @@ import {
 import { readResolvedMarketOnchain } from "../lib/resolved-market";
 import { backfillMissingPnl } from "../lib/pnl-backfill-persist";
 import { createInFlightGuard } from "../lib/finalization-guard";
+import { telegramTradeReplyOptions } from "../lib/telegram-trade-format";
 
 const TICK_MS = 45_000;
 
@@ -73,9 +74,7 @@ export async function runFinalizationTick(
         config.explorerTxBaseUrl,
       );
       if (!text.trim()) continue;
-      await bot.api.sendMessage(trade.telegramUserId, text, {
-        link_preview_options: { is_disabled: true },
-      });
+      await bot.api.sendMessage(trade.telegramUserId, text, telegramTradeReplyOptions());
     } catch (error) {
       logger.error(
         {

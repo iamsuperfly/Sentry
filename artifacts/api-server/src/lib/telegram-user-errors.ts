@@ -3,6 +3,9 @@
  * Technical strings stay in logs; this layer never echoes them.
  */
 
+export const SOMNIA_HELPER_BOT = "@somnia_helper_bot";
+export const STT_HELPER_LINE = `Need STT gas? Claim it with ${SOMNIA_HELPER_BOT}.`;
+
 export function extractPnlFromReason(reason: string | null | undefined): number | null {
   if (!reason) return null;
   const patterns = [
@@ -32,7 +35,10 @@ export function looksLikeBookMiss(code: string, reason?: string | null): boolean
     /intended limit/i.test(blob) ||
     /live (yes|no) ask/i.test(blob) ||
     /ask size .+ below contracts/i.test(blob) ||
-    /no live .+ ask/i.test(blob)
+    /no live .+ ask/i.test(blob) ||
+    /post_only_would_cross/i.test(blob) ||
+    /postonlywouldcross/i.test(blob) ||
+    /would cross/i.test(blob)
   );
 }
 
@@ -109,7 +115,7 @@ export function sanitizeTechnicalErrorNote(raw: string | null | undefined): stri
   if (/selected:\s*\d+/i.test(raw) || /^mode:\s*/i.test(raw)) {
     return null;
   }
-  return raw.slice(0, 180);
+  return null;
 }
 
 export function formatUserFacingTradeFailure(input: {
@@ -153,8 +159,6 @@ export function formatUserFacingTradeFailure(input: {
     return [
       "⚪ Network or allowance issue",
       "",
-      "Check status and try again shortly.",
-      "No funds were used unless a transaction already confirmed.",
       "Report to @iamsuperflly if the issue persists.",
     ].join("\n");
   }
@@ -209,9 +213,8 @@ export function formatUserFacingTradeFailure(input: {
       return [
         "⚪ Network gas",
         "",
-        "Sentry sponsors STT gas when the wallet is short.",
-        "Check status and try again shortly.",
-        "No funds were used unless a transaction already confirmed.",
+        STT_HELPER_LINE,
+        "Report to @iamsuperflly if the issue persists.",
       ].join("\n");
     case "unauthenticated":
       return ["⚪ Wallet not ready", "", "Tap Start first to create your wallet."].join("\n");
@@ -221,6 +224,8 @@ export function formatUserFacingTradeFailure(input: {
       return ["⚪ Could not record the trade", "", "Please try again in a moment. No on-chain order was sent."].join("\n");
     case "submission_failed":
     case "submission_error":
+    case "post_only_would_cross":
+    case "post_only_unavailable":
       return ["⚪ Order did not complete", "", NOTHING_TAKEN].join("\n");
     default:
       return ["⚪ No trade placed", "", "The trade was not completed.", "No funds were used unless a transaction already confirmed."].join("\n");

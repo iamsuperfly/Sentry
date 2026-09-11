@@ -246,6 +246,35 @@ describe("evaluateRisk system + user layers", () => {
     }
   });
 
+  it("allows 4 open when the user cap is 10", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: {
+        ...validUser,
+        maxOpenPositions: 10,
+        openPositionCount: 4,
+      },
+      system,
+    });
+    assert.equal(r.ok, true);
+  });
+
+  it("blocks at 10/10 even if the system cap is also 10", () => {
+    const r = evaluateRisk({
+      stake: 2,
+      limitPrice: 0.4,
+      settings: {
+        ...validUser,
+        maxOpenPositions: 10,
+        openPositionCount: 10,
+      },
+      system,
+    });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "system_max_open_positions");
+  });
+
   it("rejects at system open-position ceiling", () => {
     const r = evaluateRisk({
       stake: 2,
