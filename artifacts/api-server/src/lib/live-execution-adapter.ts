@@ -26,7 +26,6 @@ import { claimPendingTrade, updateTradeExecution } from "./supabase.ts";
 import { evaluatePreflightBook, levelFromBookSide, type PreflightBook } from "./preflight-book.ts";
 import { logger } from "./logger.ts";
 import { looksLikeInsufficientGas, looksLikePostOnlyWouldCross } from "./insufficient-gas.ts";
-import { replenishUserSttGas } from "./gas-replenish.ts";
 import { rememberWindow } from "./market-window.ts";
 import { getSharedSomniaExchange, withUserWriteSession } from "./somnia-client.ts";
 import { classifySdkFailure } from "./sdk-failure.ts";
@@ -314,6 +313,7 @@ export function createProductionLiveExecutionDeps(
         outcome: order.outcome,
         limitPrice: order.limitPrice,
         book,
+        decimals,
       })) {
         return {
           filledContracts: 0,
@@ -367,16 +367,6 @@ export function createProductionLiveExecutionDeps(
           });
         }
       });
-    },
-
-    replenishGas: async ({ userId, walletAddress }) => {
-      const result = await replenishUserSttGas({
-        config,
-        userId,
-        walletAddress,
-      });
-      if (!result.ok) return result;
-      return { ok: true, hash: result.hash };
     },
 
     claimTrade: ({ tradeId, userId }) =>

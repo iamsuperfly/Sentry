@@ -102,4 +102,44 @@ describe("human trade errors", () => {
       "Network issue. Try again shortly.",
     );
   });
+
+  it("uses the exact network/allowance copy", () => {
+    const copy = formatUserFacingTradeFailure({
+      code: "chain_read_failed",
+      reason: "rpc readContract balanceOf failed",
+    });
+    assert.equal(
+      copy,
+      [
+        "⚪ Network or allowance issue",
+        "",
+        "Report to @iamsuperflly if the issue persists.",
+      ].join("\n"),
+    );
+    assert.doesNotMatch(copy, /Check status/);
+    assert.doesNotMatch(copy, /No funds were used unless/);
+  });
+
+  it("maps PostOnlyWouldCross to Not filled", () => {
+    const copy = formatUserFacingTradeFailure({
+      code: "submission_error",
+      reason: "PostOnlyWouldCross()",
+    });
+    assert.match(copy, /Not filled/);
+    assert.doesNotMatch(copy, /PostOnlyWouldCross/);
+  });
+
+  it("points gas failures at the helper bot and never claims replenish", () => {
+    const copy = formatUserFacingTradeFailure({
+      code: "insufficient_gas",
+      reason: "insufficient funds for gas * price + value",
+    });
+    assert.match(copy, /@somnia_helper_bot/);
+    assert.doesNotMatch(copy, /sponsors STT/);
+    assert.doesNotMatch(copy, /insufficient funds for gas/);
+  });
+
+  it("drops unknown SDK notes instead of echoing them", () => {
+    assert.equal(sanitizeTechnicalErrorNote("weird internal blob xyz"), null);
+  });
 });

@@ -139,6 +139,27 @@ describe("selectEntryExecution", () => {
     );
   });
 
+  it("compares integer ticks when decimals are provided", () => {
+    assert.equal(
+      postOnlyWouldCross({
+        outcome: "YES",
+        limitPrice: 0.4,
+        book: { yesAsk: { price: 0.4000000001, quantity: 1 }, noAsk: null },
+        decimals: 6,
+      }),
+      true,
+    );
+    assert.equal(
+      postOnlyWouldCross({
+        outcome: "YES",
+        limitPrice: 0.4,
+        book: { yesAsk: { price: 0.41, quantity: 1 }, noAsk: null },
+        decimals: 6,
+      }),
+      false,
+    );
+  });
+
   it("expires POST_ONLY at market-15 not now+120", () => {
     const now = 1_700_000_000;
     const expiry = now + 900;

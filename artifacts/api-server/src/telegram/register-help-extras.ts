@@ -6,6 +6,7 @@ import {
   formatHistoryMessage,
   listHistoryForDisplay,
 } from "../lib/position-display";
+import { telegramTradeReplyOptions } from "../lib/telegram-trade-format";
 import { getLeaderboardMessage } from "../lib/leaderboard-persist";
 import { decryptPrivateKey } from "../lib/wallet-crypto";
 import {
@@ -28,7 +29,7 @@ export async function showHistory(ctx: Context, config: AppConfig) {
   const userId = await ensureUser(config, ctx.from!);
   const history = await listHistoryForDisplay(config, userId, 8);
   await ctx.reply(formatHistoryMessage(history, config.explorerTxBaseUrl), {
-    link_preview_options: { is_disabled: true },
+    ...telegramTradeReplyOptions(),
     reply_markup: helpKeyboard(),
   });
 }

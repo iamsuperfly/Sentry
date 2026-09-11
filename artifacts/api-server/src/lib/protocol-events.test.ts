@@ -5,6 +5,9 @@ import {
   classifyLiveMarketDelta,
   fingerprintBinaryTop,
   isTradingOpportunityKind,
+  shouldCoalesceLiveScan,
+  LIVE_SCAN_COALESCE_MS,
+  PROTOCOL_ENGINE_DEBOUNCE_MS,
 } from "./protocol-events.ts";
 
 describe("protocol live events", () => {
@@ -111,5 +114,17 @@ describe("book_change opportunity", () => {
     assert.equal(isTradingOpportunityKind("book_change"), true);
     assert.equal(isTradingOpportunityKind("market_live"), true);
     assert.equal(isTradingOpportunityKind("locked"), false);
+  });
+});
+
+describe("live scan coalescing", () => {
+  it("coalesces subscribeLive scans inside 250ms", () => {
+    assert.equal(shouldCoalesceLiveScan(null, 1_000), false);
+    assert.equal(shouldCoalesceLiveScan(1_000, 1_000 + LIVE_SCAN_COALESCE_MS - 1), true);
+    assert.equal(shouldCoalesceLiveScan(1_000, 1_000 + LIVE_SCAN_COALESCE_MS), false);
+  });
+
+  it("uses an 8s engine debounce for every opportunity kind", () => {
+    assert.equal(PROTOCOL_ENGINE_DEBOUNCE_MS, 8_000);
   });
 });

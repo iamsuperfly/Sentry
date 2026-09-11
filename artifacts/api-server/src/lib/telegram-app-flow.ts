@@ -9,7 +9,10 @@ import {
   type UserRiskPreferences,
   validateUserSettings,
 } from "./risk.ts";
-import { applySettingsPatch } from "./telegram-settings.ts";
+import {
+  applySettingsPatch,
+  formatAdaptiveBandSummary,
+} from "./telegram-settings.ts";
 
 export const BTN = {
   tradeNow: "⚡ TRADE NOW",
@@ -35,6 +38,7 @@ export const BTN = {
   changeDailyLoss: "CHANGE DAILY LOSS",
   changePositions: "CHANGE MAX POSITIONS",
   changeProfit: "CHANGE PROFIT TARGET",
+  changeAdaptive: "CHANGE ADAPTIVE BANDS",
   startAuto: "START AUTONOMOUS",
   pauseAuto: "PAUSE AUTONOMOUS",
   backMenu: "MAIN MENU",
@@ -84,6 +88,7 @@ export type ConversationState =
   | { kind: "onboard_faucet"; returning: boolean }
   | { kind: "onboard"; step: OnboardStep; draft: UserRiskPreferences }
   | { kind: "setting"; field: SettingField }
+  | { kind: "adaptive_bands" }
   | { kind: "faucet_amount" };
 
 export const DEFAULT_FAUCET_AMOUNT = "100";
@@ -158,6 +163,7 @@ export function formatCurrentSettingsBlock(settings: UserRiskPreferences): strin
     `• Max daily loss: ${settings.maxDailyLoss} tUSDC`,
     `• Max open positions: ${settings.maxOpenPositions}`,
     `• Daily profit target: ${profit}`,
+    `• Adaptive stake: ${settings.adaptiveStakeBands ? "custom" : "system defaults"} (${formatAdaptiveBandSummary(settings.adaptiveStakeBands)})`,
   ].join("\n");
 }
 

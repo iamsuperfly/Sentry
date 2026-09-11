@@ -36,6 +36,7 @@ import {
   DEFAULT_USER_TIMEZONE,
   getZonedDayBounds,
 } from "./user-timezone.ts";
+import { getActiveOpenPositionCount } from "./active-positions.ts";
 
 export type TelegramIdentity = {
   id: number;
@@ -263,14 +264,9 @@ export async function getOpenPositionCount(
   config: AppConfig,
   userId: string,
 ): Promise<number> {
-  const { count, error } = await getSupabaseClient(config)
-    .from("trades")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .in("status", [...OPEN_TRADE_STATUSES]);
-
-  if (error) throw new Error("Unable to read open positions.");
-  return count ?? 0;
+  // Same expiry-aware count as /positions. Stale submitted/filled rows on
+  // expired markets must not consume the user's live slot cap.
+  return getActiveOpenPositionCount(config, userId);
 }
 
 export async function getRealizedPnlToday(

@@ -72,15 +72,20 @@ describe("messages", () => {
       dailyPnl: 12.4,
       wins: 2,
       losses: 1,
+      dailyStakes: 40,
+      dailyPayouts: 52.4,
       unclaimedPositions: 2,
       unclaimedValue: 48.5,
     });
-    assert.match(text, /Daily report/);
+    assert.match(text, /Daily report \(UTC\)/);
     assert.match(text, /Trades attempted: 8/);
     assert.match(text, /Filled: 3/);
     assert.match(text, /Failed: 4/);
+    assert.match(text, /Win rate: 2\/3 \(67%\)/);
+    assert.match(text, /Stakes: 40 tUSDC/);
+    assert.match(text, /Payouts: 52.4 tUSDC/);
     assert.match(text, /\+12\.4/);
-    assert.match(text, /Unclaimed positions: 2/);
+    assert.match(text, /Still unclaimed \(all time\)/);
   });
 
   it("counts day activity from trade statuses", () => {

@@ -65,16 +65,32 @@ export function selectEntryExecution(pre: PreflightResult): EntryExecutionChoice
   };
 }
 
+function humanToFloorRaw(human: number, decimals: number): bigint | null {
+  if (!Number.isFinite(human) || human < 0) return null;
+  const scale = 10 ** decimals;
+  const raw = Math.floor(human * scale + 1e-9);
+  if (!Number.isFinite(raw) || raw < 0) return null;
+  return BigInt(raw);
+}
+
 /** Buy POST_ONLY crosses iff a live ask exists at or below the intended limit. */
 export function postOnlyWouldCross(input: {
   outcome: "YES" | "NO";
   limitPrice: number;
   book: PreflightBook;
   priceEpsilon?: number;
+  decimals?: number;
 }): boolean {
-  const eps = input.priceEpsilon ?? 1e-9;
   const ask = input.outcome === "YES" ? input.book.yesAsk : input.book.noAsk;
-  return ask !== null && ask.price <= input.limitPrice + eps;
+  if (!ask) return false;
+  const decimals = input.decimals;
+  if (decimals !== undefined) {
+    const askRaw = humanToFloorRaw(ask.price, decimals);
+    const limitRaw = humanToFloorRaw(input.limitPrice, decimals);
+    if (askRaw !== null && limitRaw !== null) return askRaw <= limitRaw;
+  }
+  const eps = input.priceEpsilon ?? 1e-9;
+  return ask.price <= input.limitPrice + eps;
 }
 
 /** Rest until near market lock, not the 2-minute IOC dead-man. */

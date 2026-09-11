@@ -79,7 +79,18 @@ export function formatExplorerLinkLine(
   hash: string | null | undefined,
 ): string | null {
   if (!hash) return null;
-  return `Tx: ${explorerTxUrl(explorerTxBaseUrl, hash)}`;
+  const href = explorerTxUrl(explorerTxBaseUrl, hash).replace(/&/g, "&");
+  return `<a href="${href}">View transaction</a>`;
+}
+
+export function telegramTradeReplyOptions(): {
+  parse_mode: "HTML";
+  link_preview_options: { is_disabled: true };
+} {
+  return {
+    parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
+  };
 }
 
 export type DisplayTrade = {

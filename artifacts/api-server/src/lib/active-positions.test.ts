@@ -30,4 +30,12 @@ describe("countActivePositionsFromRows", () => {
     );
     assert.equal(n, 4);
   });
+
+  it("counts 4 live + 6 expired as 4, not 10", () => {
+    const rows = [
+      ...Array.from({ length: 4 }, () => ({ status: "filled" as const, marketExpiry: now + 300 })),
+      ...Array.from({ length: 6 }, () => ({ status: "submitted" as const, marketExpiry: now - 10 })),
+    ];
+    assert.equal(countActivePositionsFromRows(rows, now), 4);
+  });
 });

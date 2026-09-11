@@ -8,7 +8,10 @@ import {
 import { logger } from "./logger.ts";
 import { findWallet } from "./supabase.ts";
 import { formatMultiTradeReply } from "./telegram-multi-trade-reply.ts";
-import { formatUserFacingTradeFailure } from "./telegram-trade-format.ts";
+import {
+  formatUserFacingTradeFailure,
+  telegramTradeReplyOptions,
+} from "./telegram-trade-format.ts";
 import { shouldRequestLiveExecution } from "./telegram-settings.ts";
 import { runSafeTelegramTradeCycle } from "./trade-cycle-safe.ts";
 import {
@@ -35,9 +38,16 @@ import {
   type DayHaltCode,
 } from "./risk-supervisor.ts";
 import { createInFlightGuard } from "./finalization-guard.ts";
+import {
+  shouldMarkAutonomousScan,
+  shouldNotifyAutonomousScan,
+  shouldRunMaintenancePhases,
+  type AutonomousTickMode,
+} from "./autonomous-policy.ts";
 
 const INTERVAL_MS = 6 * 60 * 1000;
 const autonomousGuard = createInFlightGuard();
+const lastTradingTickAt = new Map<string, number>();
 
 function errText(error: unknown, fallback: string): string {
   if (error instanceof Error && error.message) return error.message.slice(0, 240);
@@ -49,9 +59,7 @@ async function sendTelegram(
   chatId: number,
   text: string,
 ): Promise<void> {
-  await bot.api.sendMessage(chatId, text, {
-    link_preview_options: { is_disabled: true },
-  });
+  await bot.api.sendMessage(chatId, text, telegramTradeReplyOptions());
 }
 
 async function notifyChat(
@@ -124,17 +132,25 @@ async function buildDailyReport(
     dailyPnl: performance.dailyPnl,
     wins: performance.dailyWins,
     losses: performance.dailyLosses,
+    dailyStakes: performance.dailyStakes,
+    dailyPayouts: performance.dailyPayouts,
     unclaimedPositions: performance.unclaimedPositions,
     unclaimedValue: performance.unclaimedValue,
   });
 }
 
+export type AutonomousTickOptions = {
+  minIntervalMs?: number;
+  mode?: AutonomousTickMode;
+};
+
 export async function runAutonomousTick(
   bot: Bot,
   config: AppConfig,
   now = new Date(),
-  options?: { minIntervalMs?: number },
+  options?: AutonomousTickOptions,
 ): Promise<void> {
+  const mode: AutonomousTickMode = options?.mode ?? "full";
   let rows;
   try {
     rows = await listAutonomousCandidates(config);
@@ -150,7 +166,7 @@ export async function runAutonomousTick(
     const decision = shouldRunAutonomousTick(
       row,
       now,
-      options?.minIntervalMs,
+      mode === "trading" ? 0 : options?.minIntervalMs,
     );
     if (decision.pauseForNewDay) {
       const localDate = calendarDateInZone(now, row.timezone);
@@ -183,8 +199,15 @@ export async function runAutonomousTick(
     }
     if (!decision.run) continue;
 
+    if (mode === "trading") {
+      const min = options?.minIntervalMs ?? 0;
+      const last = lastTradingTickAt.get(row.userId) ?? 0;
+      if (min > 0 && now.getTime() - last < min) continue;
+      lastTradingTickAt.set(row.userId, now.getTime());
+    }
+
     logger.info(
-      { userId: row.userId, telegramUserId: row.telegramUserId },
+      { userId: row.userId, telegramUserId: row.telegramUserId, mode },
       "autonomous tick started",
     );
 
@@ -233,50 +256,52 @@ export async function runAutonomousTick(
     }
 
     let excludedMarketIds: string[] = [];
-    try {
-      const wallet = await findWallet(config, row.telegramUserId);
-      if (wallet) {
-        const managed = await manageOpenPositions({
-          config,
-          userId: row.userId,
-          walletAddress: wallet.address,
-          encryptedPrivateKey: wallet.encrypted_private_key,
-          liveExecutionRequested: shouldRequestLiveExecution(
-            row.executionMode,
-            true,
-          ),
-        });
-        excludedMarketIds = managed.excludedMarketIds;
-        logger.info(
+    if (shouldRunMaintenancePhases(mode)) {
+      try {
+        const wallet = await findWallet(config, row.telegramUserId);
+        if (wallet) {
+          const managed = await manageOpenPositions({
+            config,
+            userId: row.userId,
+            walletAddress: wallet.address,
+            encryptedPrivateKey: wallet.encrypted_private_key,
+            liveExecutionRequested: shouldRequestLiveExecution(
+              row.executionMode,
+              true,
+            ),
+          });
+          excludedMarketIds = managed.excludedMarketIds;
+          logger.info(
+            {
+              userId: row.userId,
+              attempts: managed.attempts.length,
+              excluded: excludedMarketIds.length,
+              exited: managed.attempts.filter((a) => a.status === "exited").length,
+              held: managed.attempts.filter((a) => a.status === "held").length,
+              failed: managed.attempts.filter((a) => a.status === "failed").length,
+            },
+            "autonomous position management result",
+          );
+          const note = formatEarlyExitMessage(managed.attempts);
+          if (note) {
+            await notifyChat(bot, row.chatId, row.telegramUserId, note, row.userId);
+          }
+        } else {
+          logger.info(
+            { userId: row.userId },
+            "autonomous position management skipped (no wallet)",
+          );
+        }
+      } catch (error) {
+        logger.warn(
           {
             userId: row.userId,
-            attempts: managed.attempts.length,
-            excluded: excludedMarketIds.length,
-            exited: managed.attempts.filter((a) => a.status === "exited").length,
-            held: managed.attempts.filter((a) => a.status === "held").length,
-            failed: managed.attempts.filter((a) => a.status === "failed").length,
+            err: errText(error, "manage"),
+            stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
           },
-          "autonomous position management result",
-        );
-        const note = formatEarlyExitMessage(managed.attempts);
-        if (note) {
-          await notifyChat(bot, row.chatId, row.telegramUserId, note, row.userId);
-        }
-      } else {
-        logger.info(
-          { userId: row.userId },
-          "autonomous position management skipped (no wallet)",
+          "autonomous position management failed",
         );
       }
-    } catch (error) {
-      logger.warn(
-        {
-          userId: row.userId,
-          err: errText(error, "manage"),
-          stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
-        },
-        "autonomous position management failed",
-      );
     }
 
     try {
@@ -286,12 +311,16 @@ export async function runAutonomousTick(
           excludeMarketIds: excludedMarketIds.length,
           liveRequested: shouldRequestLiveExecution(row.executionMode, true),
           stakeMode: "adaptive",
+          mode,
         },
         "autonomous scan started",
       );
       const result = await runSafeTelegramTradeCycle(
         buildAutonomousTradeCycleInput(config, row, excludedMarketIds),
       );
+      const placedCount = result.ok
+        ? (result.trades ?? []).filter((t) => t.ok && t.execution?.ok).length
+        : 0;
       logger.info(
         {
           userId: row.userId,
@@ -299,23 +328,24 @@ export async function runAutonomousTick(
           code: result.ok ? undefined : result.code,
           selected: result.ok ? result.marketScan.selected : result.marketScan?.selected,
           trades: result.ok ? (result.trades?.length ?? 0) : 0,
-          executed: result.ok
-            ? (result.trades ?? []).filter((t) => t.ok && t.execution?.ok).length
-            : 0,
+          executed: placedCount,
+          mode,
         },
         "autonomous scan result",
       );
-      try {
-        await markAutonomousScan(config, row.userId, row.timezone, now);
-      } catch (error) {
-        logger.warn(
-          {
-            userId: row.userId,
-            err: errText(error, "mark"),
-            stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
-          },
-          "autonomous scan mark failed",
-        );
+      if (shouldMarkAutonomousScan(mode)) {
+        try {
+          await markAutonomousScan(config, row.userId, row.timezone, now);
+        } catch (error) {
+          logger.warn(
+            {
+              userId: row.userId,
+              err: errText(error, "mark"),
+              stack: error instanceof Error ? error.stack?.slice(0, 400) : undefined,
+            },
+            "autonomous scan mark failed",
+          );
+        }
       }
       if (!result.ok) {
         const haltCodes = new Set([
@@ -331,19 +361,31 @@ export async function runAutonomousTick(
             calendarDateInZone(now, "UTC"),
           );
         }
-        let failText = `Autonomous scan\n\n${result.code}`;
+        let failText = formatUserFacingTradeFailure({
+          code: "execution_failed",
+          reason: "The trade was not completed.",
+        });
         try {
-          failText = `Autonomous scan\n\n${formatUserFacingTradeFailure({
+          failText = formatUserFacingTradeFailure({
             code: result.code,
             reason: result.reason,
-          })}`;
+          });
         } catch (error) {
           logger.warn(
             { userId: row.userId, err: errText(error, "format") },
             "autonomous failure format failed",
           );
         }
-        await notifyChat(bot, row.chatId, row.telegramUserId, failText, row.userId);
+        if (
+          shouldNotifyAutonomousScan({
+            ok: false,
+            code: result.code,
+            reason: result.reason,
+            placedCount: 0,
+          })
+        ) {
+          await notifyChat(bot, row.chatId, row.telegramUserId, failText, row.userId);
+        }
       } else {
         logger.info(
           {
@@ -354,30 +396,40 @@ export async function runAutonomousTick(
           },
           "autonomous execution result",
         );
-        let okText = `Autonomous scan\n\nTrades: ${result.trades?.length ?? 0}`;
-        try {
-          okText = `Autonomous scan\n\n${formatMultiTradeReply({
-            trades: result.trades ?? [],
-            fallback: {
-              tradeId: result.tradeId,
-              intentSymbol: result.intentSymbol,
-              decision: result.decision,
-              stake: result.stake,
-              execution: result.execution,
-            },
-            marketsLine: `selected: ${result.marketScan.selected ?? 0}`,
-            executionMode: row.executionMode,
-            explorerTxBaseUrl: config.explorerTxBaseUrl,
-          })}`;
-        } catch (error) {
-          logger.warn(
-            { userId: row.userId, err: errText(error, "format") },
-            "autonomous success format failed",
-          );
+        if (
+          shouldNotifyAutonomousScan({
+            ok: true,
+            placedCount,
+          })
+        ) {
+          let okText = formatUserFacingTradeFailure({
+            code: "execution_failed",
+            reason: "The trade was not completed.",
+          });
+          try {
+            okText = formatMultiTradeReply({
+              trades: result.trades ?? [],
+              fallback: {
+                tradeId: result.tradeId,
+                intentSymbol: result.intentSymbol,
+                decision: result.decision,
+                stake: result.stake,
+                execution: result.execution,
+              },
+              marketsLine: `selected: ${result.marketScan.selected ?? 0}`,
+              executionMode: row.executionMode,
+              explorerTxBaseUrl: config.explorerTxBaseUrl,
+            });
+          } catch (error) {
+            logger.warn(
+              { userId: row.userId, err: errText(error, "format") },
+              "autonomous success format failed",
+            );
+          }
+          await notifyChat(bot, row.chatId, row.telegramUserId, okText, row.userId);
         }
-        await notifyChat(bot, row.chatId, row.telegramUserId, okText, row.userId);
       }
-      logger.info({ userId: row.userId, ok: result.ok }, "autonomous tick completed");
+      logger.info({ userId: row.userId, ok: result.ok, mode }, "autonomous tick completed");
     } catch (error) {
       logger.warn(
         {
@@ -388,6 +440,8 @@ export async function runAutonomousTick(
         "autonomous trade tick failed",
       );
     }
+
+    if (!shouldRunMaintenancePhases(mode)) continue;
 
     try {
       const wallet = await findWallet(config, row.telegramUserId);
@@ -416,7 +470,7 @@ export async function runAutonomousTick(
           bot,
           row.chatId,
           row.telegramUserId,
-          `Autonomous claim\n\n${formatClaimMessage(attempts)}`,
+          `Autonomous claim\n\n${formatClaimMessage(attempts, config.explorerTxBaseUrl)}`,
           row.userId,
         );
       }
@@ -435,9 +489,12 @@ export async function runAutonomousTick(
 export function startAutonomousLoop(
   bot: Bot,
   config: AppConfig,
-): { stop: () => void; requestTick: (minIntervalMs?: number) => void } {
+): {
+  stop: () => void;
+  requestTick: (minIntervalMs?: number, mode?: AutonomousTickMode) => void;
+} {
   const timer = setInterval(() => {
-    void autonomousGuard(() => runAutonomousTick(bot, config));
+    void autonomousGuard(() => runAutonomousTick(bot, config, new Date(), { mode: "full" }));
   }, INTERVAL_MS);
   timer.unref?.();
   logger.info({ intervalMs: INTERVAL_MS }, "autonomous loop started");
@@ -445,9 +502,9 @@ export function startAutonomousLoop(
     stop() {
       clearInterval(timer);
     },
-    requestTick(minIntervalMs = 0) {
+    requestTick(minIntervalMs = 0, mode: AutonomousTickMode = "trading") {
       void autonomousGuard(() =>
-        runAutonomousTick(bot, config, new Date(), { minIntervalMs }),
+        runAutonomousTick(bot, config, new Date(), { minIntervalMs, mode }),
       );
     },
   };

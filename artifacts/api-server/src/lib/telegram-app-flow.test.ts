@@ -5,6 +5,7 @@ import { DEFAULT_USER_PREFERENCES } from "./risk.ts";
 import {
   BTN,
   formatDashboard,
+  formatCurrentSettingsBlock,
   formatOnboardIntro,
   isMainMenuLabel,
   parseNumericInput,
@@ -143,5 +144,13 @@ describe("copy and buttons", () => {
 
   it("has setup-complete copy pointing at Help → Settings", () => {
     assert.match(SETUP_COMPLETE_TEXT, /Help → Settings/);
+  });
+});
+
+describe("settings snapshot", () => {
+  it("shows adaptive bands without inventing new sizing", () => {
+    const text = formatCurrentSettingsBlock(DEFAULT_USER_PREFERENCES);
+    assert.match(text, /Adaptive stake: system defaults/);
+    assert.match(text, /25%/);
   });
 });

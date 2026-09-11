@@ -1,6 +1,7 @@
 /**
- * Automatic STT gas replenishment from the Sentry treasury.
- * Reuses sponsor(). No treasury spending cap. One replenish per submit.
+ * Unused. Later automatic STT replenishment was removed.
+ * Wallet-creation sponsorship remains in bot.ts (INITIAL_STT_SPONSOR).
+ * Users claim additional STT via @somnia_helper_bot.
  */
 
 import type { AppConfig } from "../config.ts";

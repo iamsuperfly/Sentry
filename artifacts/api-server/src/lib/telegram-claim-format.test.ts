@@ -31,4 +31,22 @@ describe("formatClaimMessage", () => {
     assert.doesNotMatch(text, /ETH/);
     assert.doesNotMatch(text, /Skipped/);
   });
+
+  it("uses View transaction when an explorer base is provided", () => {
+    const text = formatClaimMessage(
+      [
+        {
+          symbol: "BTC",
+          direction: "up",
+          status: "claimed",
+          reason: "redeemed",
+          payoutEstimate: 18.4,
+          transactionHash: "0xabc",
+        },
+      ],
+      "https://shannon-explorer.somnia.network/tx",
+    );
+    assert.match(text, />View transaction</);
+    assert.doesNotMatch(text, /Tx: 0xabc/);
+  });
 });
