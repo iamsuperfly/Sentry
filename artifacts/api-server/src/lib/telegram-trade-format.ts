@@ -6,8 +6,10 @@
 import { resolveMarketDurationSeconds } from "./decision-market-meta.ts";
 import {
   isEarlyExitNote,
+  looksLikeAllowanceOrRpc,
   looksLikeBookMiss,
   looksLikeIocNoFill,
+  looksLikeSdkClientFailure,
   sanitizeTechnicalErrorNote,
 } from "./telegram-user-errors.ts";
 
@@ -361,6 +363,43 @@ export function isQuietZeroFillFinalization(input: {
   );
 }
 
+/**
+ * A failed submission is not a closed trade when the transport/SDK/chain
+ * failure happened before a fill or realized PnL was confirmed.
+ */
+export function isQuietUnconfirmedExecutionFailure(input: {
+  status: string;
+  errorMessage?: string | null;
+  filledContracts?: number | null;
+  pnl?: number | null;
+}): boolean {
+  if (input.status.toLowerCase() !== "failed") return false;
+  if (
+    typeof input.filledContracts === "number" &&
+    Number.isFinite(input.filledContracts) &&
+    input.filledContracts > 0
+  ) {
+    return false;
+  }
+  if (
+    typeof input.pnl === "number" &&
+    Number.isFinite(input.pnl) &&
+    input.pnl !== 0
+  ) {
+    return false;
+  }
+
+  const error = input.errorMessage ?? "";
+  return (
+    looksLikeAllowanceOrRpc("", error) ||
+    looksLikeSdkClientFailure("", error) ||
+    /\b(?:network|transport|timeout|timed\s*out|timedout|provider|socket)\b/i.test(
+      error,
+    ) ||
+    /\bECONN(?:RESET|REFUSED)\b|\bETIMEDOUT\b/i.test(error)
+  );
+}
+
 export function formatFinalizationMessage(input: {
   symbol: string;
   direction: string;
@@ -376,7 +415,12 @@ export function formatFinalizationMessage(input: {
   errorMessage?: string | null;
   explorerTxBaseUrl: string;
 }): string {
-  if (isQuietZeroFillFinalization(input)) return "";
+  if (
+    isQuietZeroFillFinalization(input) ||
+    isQuietUnconfirmedExecutionFailure(input)
+  ) {
+    return "";
+  }
   const kind = classifyFinalization(input);
   const duration = marketDurationSeconds(input.tradingStart, input.marketExpiry, input.intervalSec);
   const timeframe = formatTimeframe(duration);
