@@ -113,6 +113,8 @@ Event contracts can go to zero. IOC orders may not fill. POST_ONLY may rest unfi
 
 Node 24, TypeScript 5.9, pnpm, grammY, Express, Supabase, viem, `@somnia-chain/markets-sdk` `0.29.0`, Zod, pino.
 
+Hackathon development notes (SDK live tail, POST_ONLY, STT, Telegram lag): [feedback.md](feedback.md).
+
 ## License
 
 MIT — Copyright (c) 2026 Superfly
