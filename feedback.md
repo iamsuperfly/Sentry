@@ -1,257 +1,134 @@
-# Sentry — hackathon development feedback
+# Sentry — hackathon development postmortem
 
-Project: [Sentry](https://github.com/iamsuperfly/Sentry) — Telegram bot trading DreamDEX BTC/ETH Up/Down event contracts on Somnia Shannon testnet.
+Solo Telegram bot trading DreamDEX BTC/ETH Up/Down event contracts on Somnia Shannon, using `@somnia-chain/markets-sdk` `0.29.0`.
 
-Live bot: [@dreamsentrybot](https://t.me/dreamsentrybot)
+Live bot: [@dreamsentrybot](https://t.me/dreamsentrybot) · repo: [iamsuperfly/Sentry](https://github.com/iamsuperfly/Sentry)
 
-This is not a pitch. It is the list of things that actually burned time, broke users, or were easy to get wrong while wiring `@somnia-chain/markets-sdk` `0.29.0` into a real multi-user bot.
-
----
-
-## 1. `subscribeLive` is not a trading-event API
-
-This was the most expensive misunderstanding of the hackathon.
-
-We treated `client.subscribeLive(cb)` as “tell me when a market lists or the book moves.” In 0.29.0 it is `store.subscribe`. The store commits on **every MaterializerStore mutation**, including `onHead` / `setStatus`. Shannon block time is ~100ms. `onHead` commits **twice per block**. That is ~10–20 callbacks per second, synchronously, on the Node event loop that also runs grammY.
-
-What made it worse:
-
-- `watchMarkets({ discover: true })` hydrates **all** indexer markets, then grows the watch set on every `MarketCreated`. More pools → larger `eth_subscribe` address list → more logs → more commits → slower `scan()`.
-- Books re-derive on every head because expiry uses `Date.now()` inside a version-keyed select. A quiet book still “changes” when a resting level expires.
-- Our first scan fingerprinted top-of-book **quantity** as well as price. Any fill or size tick emitted `book_change`.
-- We discarded the `WatchHandle` (`void handle`) and never called `handle.stop()`. The all-markets tail never tore down.
-- Reconnects did not multiply `subscribeLive` listeners (store listeners persist), but they did `setStatus` + `getLogs` backfill for the full watch set on the **same** socket. That is a CPU/network spike, not a clean resume.
-
-**Ask:** document `subscribeLive` as “store commit, including every head,” not “market/book event.” Provide a filtered callback (Trading binary pools only, or log-batch only) and a first-class `WatchHandle.stop()` example. `watchMarket` for a small live set should be the documented default; `watchMarkets({ discover: true })` should warn that it is the entire indexer.
+This is what I actually hit. Not a pitch.
 
 ---
 
-## 2. WebSocket as a wake-up became a second full engine
+## Observed
 
-Architecture we wanted:
+### `subscribeLive` is a store-commit callback, not a trading-event API
 
-```text
-DreamDEX WS event  →  existing engine
-6-minute loop      →  fallback / claims / early-exit
-```
+I treated `client.subscribeLive(cb)` as “market listed / book moved.” In 0.29.0 it is `store.subscribe`. From SDK source, the store commits on every MaterializerStore mutation, including `onHead` / `setStatus`. Shannon block time is ~100ms; `onHead` commits twice per block. The callback therefore runs on head cadence (~10–20/s), synchronously, on the same Node event loop as grammY.
 
-Architecture we accidentally shipped first:
+Related, also from SDK source and my wiring:
 
-```text
-every store.commit
-  → scan all live rows
-  → debounce book_change at 1s
-  → requestTick(minIntervalMs = 0)   // bypasses the 5-minute skip
-  → for EVERY autonomous user:
-        early-exit write session
-        cold indexer listing + per-market getMarketOnchain + getBinaryOrderBook
-        strategy + risk + possibly sign
-        Telegram notify (including no_enter)
-        claim scan + another write session
-```
+- `watchMarkets({ discover: true })` hydrates **all** indexer markets and grows the watch set on `MarketCreated`. More pools → larger `eth_subscribe` set → more commits → slower scans.
+- Books re-derive on every head (expiry uses `Date.now()` in a version-keyed select). A quiet book still changes when a resting level expires.
+- I fingerprinted top-of-book **quantity** as well as price, so any size tick emitted `book_change`.
+- I discarded the `WatchHandle` (`void handle`) and never called `stop()`. The all-markets tail never tore down.
+- Store listeners persist across reconnect; reconnect still does `setStatus` + `getLogs` backfill on the same socket.
 
-`minIntervalMs = 0` is the smoking gun. The in-flight guard only **serializes**. As soon as a tick finished, the next 1s debounce started another. Effective rate: one full multi-user engine run, continuously.
+### WebSocket wake ran the full engine
 
-Discovery did **not** read the live store. WS was only a poke. Then every user paid `listLiveBinaryMarkets` (limit 100) plus ~2 chain reads per market on the **same** shared viem WebSocket as `watchBlocks({ emitMissed: true })`. Listing `eth_call`s starved the tail → stall → `onWsError` → reconnect/backfill → Railway CPU/network spike. That matched production.
+Intended shape: WS event → existing engine; 6-minute loop → fallback (claims, early-exit).
 
-`/help` and `/settings` do almost no I/O. They felt slow because they share the event loop **and** `bot.api` with that storm. grammY honors Telegram `retry_after`. A 1 Hz no-op scan × N users → 429s → command replies wait on retry-after.
+What I shipped first: every store commit → scan all live rows → 1s `book_change` debounce → `requestTick(minIntervalMs = 0)`. Interval `0` bypassed the 5-minute per-user skip. The in-flight guard only serializes. Result: a continuous full tick for every autonomous user — early-exit write session, cold indexer listing, per-market `getMarketOnchain` + `getBinaryOrderBook`, strategy/risk, Telegram (including `no_enter`), then claims.
 
-**What we changed:** 250ms scan coalesce, 8s engine debounce for every opportunity kind, `trading` vs `full` tick modes, no `markAutonomousScan` on WS ticks so the 6-minute fallback still does claims, no Telegram on `no_enter` / book-miss.
+Discovery did not read the live store. WS was only a poke. Listing `eth_call`s ran on the **same** shared viem WebSocket as `watchBlocks({ emitMissed: true })`. That starved the tail, tripped reconnect/backfill, and matched the Railway CPU/network spikes.
 
-**Ask:** an official “WS feeds the engine, do not re-list” pattern. `getLiveMarkets` + `getLiveBinaryOrderBook` should be enough for the hot path. Re-RPC on every wake is the load amplifier.
+`/help` and `/settings` do almost no I/O. They got slow because they share the event loop and `bot.api`. grammY honors `retry_after`; empty-scan Telegram 429s delayed command replies.
 
----
+### Shared read client vs per-user writes
 
-## 3. Shared read client vs per-user writes
+One process-level `SomniaMarkets` for reads is correct. Writes sharing that client (or extra clients in dead paths) produced:
 
-One process-level `SomniaMarkets` for reads is correct. We originally let writes share it, or constructed extra clients in dead paths (`exchangeFromConfig` in resolved-market). Effects we hit:
+- Other Telegram users appearing not to trade (`unreachable`, `invariant violated: expected a value to be present`, `no external wallet client`).
+- Write-session `close()` raced against a 2s timer; hung closes can linger while ticks create/close sockets per user per phase.
+- SDK failures with **no transaction hash** left the trade row `submitted` and consumed an open slot until finalization.
 
-- Other Telegram users appeared never to trade. Writes were colliding / waiting on one wallet context, or failing with `unreachable` / `invariant violated: expected a value to be present` / `no external wallet client`.
-- Closing a write session races SDK `close()` against a 2s timer. If `close()` hangs, internals can linger. Continuous ticks ⇒ create/close WS per user per phase (manage, place, claim).
-- SDK errors with **no transaction hash** used to leave the trade row `submitted`. That consumed an open slot forever. We now fail those closed.
+### `ORDER_TYPE` and `POST_ONLY`
 
-**Ask:** a documented recipe: one long-lived read client, short-lived write sessions with an explicit wallet, and `close()` that actually finishes. A public “is this client currently bound to a signer?” invariant would have saved a day. `unreachable` / InvariantError are too vague to show users and too easy to mis-handle in persistence.
+Values I had to pin from the SDK and keep in tests:
 
----
+| Name | Value | Use |
+|---|---|---|
+| `LIMIT` | 0 | unused for entry |
+| `FOK` | 1 | unused |
+| `MARKET` | 2 | IOC-style take |
+| `POST_ONLY` | 3 | rest, must not take |
 
-## 4. ORDER_TYPE and POST_ONLY
+`PostOnlyWouldCross()` is a **pool revert**, not a gas error. I initially classified some of those reverts as insufficient STT and tried treasury sponsor → retry. That spends gas budget and still reverts.
 
-SDK mapping we had to reverse-engineer and pin in tests:
+Local would-cross used human floats (`ask.price <= limit + 1e-9`). Placement used `parseUnits(String(limitPrice), decimals)`, not the snapped raw tick. A reconstructed human can round one tick up and cross on-chain after a “safe” preflight. That is the verified path to `PostOnlyWouldCross()` after local checks.
 
-| Name      | Value | How we use it      |
-|-----------|-------|--------------------|
-| LIMIT     | 0     | not used for entry |
-| FOK       | 1     | not used           |
-| MARKET    | 2     | IOC-style take     |
-| POST_ONLY | 3     | rest, never take   |
+Also true in my code: three book reads (preflight → adapter → chain) so TOCTOU remains; an invalid `levels[0]` was treated as “no ask,” which allowed a maker that could still cross a deeper valid level.
 
-`PostOnlyWouldCross()` is a **pool revert**, not a gas error. We originally classified some reverts as insufficient gas and tried to sponsor STT. That burns treasury and still reverts.
+### Error classification
 
-Local would-cross was `ask.price <= limit + 1e-9` in human floats. Placement used `parseUnits(String(order.limitPrice), decimals)`, not the snapped raw tick. A reconstructed human can round **one tick up** and land on/through the ask. That is how POST_ONLY still hit `PostOnlyWouldCross()` on-chain after a “safe” preflight.
+Reverts and client failures I actually saw:
 
-Other holes:
-
-- Three book reads (preflight → adapter re-read → chain). Book can move. Residual TOCTOU is real; we fail closed and map the revert to “Not filled,” but we cannot promise the matcher sees the same book we did.
-- `levelFromBookSide` used `levels[0]` and treated an invalid top (`price <= 0` or `>= 1`) as “no ask,” which allowed POST_ONLY that would still cross a deeper valid ask.
-- `selectEntryExecution` did not call `postOnlyWouldCross`. Stale/no-ask → POST_ONLY, and only later did submit check cross. Same tick, same book, still signed a crossing maker.
-- Strategy stays TAKE/IOC. POST_ONLY is an execution fallback, not a user setting. That split is easy to get wrong in docs and Telegram copy.
-
-**Ask:** expose raw tick prices on live book levels (bigint), a `wouldCross(side, limitRaw)` helper, and document that POST_ONLY is a pool invariant, not “maker if possible.” Mapping MARKET=2 to IOC behaviour also deserves a sentence in the SDK README. We kept MARKET for early-exit sells because changing it mid-hackathon was a product change, not a bugfix — the comment said IOC, the code said MARKET.
-
----
-
-## 5. SDK errors leak or get misclassified
-
-The contract reverts we actually saw in Telegram and logs:
-
-- `ImmediateOrCancelNoFill()` — common, should be quiet “Not filled”
-- `PostOnlyWouldCross()` — same user-facing outcome, different selector
+- `ImmediateOrCancelNoFill()` — common; user-facing “Not filled”
+- `PostOnlyWouldCross()` — same user outcome, different selector
 - `unreachable: no external wallet client`
 - `invariant violated: expected a value to be present`
 - `execution reverted` + 4-byte selectors
 - JSON-RPC / WebSocket / `ws_request` / `not connected`
 - allowance / `readContract` / `fetch failed`
 
-If you interpolate `error.message` or `result.code` into Telegram, users see Solidity names. Our autonomous fallback was literally:
+Interpolating `error.message` or `result.code` into Telegram shows Solidity names. My autonomous fallback was `Autonomous scan\n\n${result.code}`. Slicing unknown strings to 180 chars still leaks.
 
-```text
-Autonomous scan
+Gas vs revert is a separate trap. `PostOnlyWouldCross` is not insufficient STT. `insufficient funds for gas * price + value` is.
 
-${result.code}
-```
+### Book freshness
 
-That is a footgun. Sanitizing “unknown” by `raw.slice(0, 180)` is also a footgun — it still leaks.
+`listLiveBinaryMarkets` (indexer HTTP), `getLiveBinaryOrderBook` (WS store), and `getBinaryOrderBook` / `getMarketOnchain` (RPC) disagree under load. I listed from the indexer, read books on the shared WS, then the matcher executed against a third view. IOC no-fill and `PostOnlyWouldCross` both happen in that gap. 1m windows make it obvious.
 
-Gas vs revert is another trap. `PostOnlyWouldCross` is not insufficient STT. `insufficient funds for gas * price + value` is. Mixing them produced sponsor→retry on a revert that will never succeed.
+The SDK has no “is this store book fresh enough to TAKE?” helper. I invented `book_stale` / `no_usable_ask` / `insufficient_liquidity` in app code; those names then leaked into Telegram until I mapped them.
 
-**Ask:** stable error codes from the SDK (`NO_FILL`, `WOULD_CROSS`, `NOT_CONNECTED`, `NO_WALLET`) instead of (or in addition to) revert selectors. A `classifyPlaceOrderError(err)` in the SDK would stop every bot from writing the same regexes.
+### STT
 
----
+Shannon needs STT. I sponsor once at wallet creation (`INITIAL_STT_SPONSOR`). I also added automatic replenish on later submits (sponsor → retry): uncapped treasury spend, retries of non-gas failures, and copy that promised Sentry would top up STT. That fought `@somnia_helper_bot`.
 
-## 6. Indexer / live store / on-chain book are three clocks
+### Position lifecycle
 
-`listLiveBinaryMarkets` (indexer HTTP), `getLiveBinaryOrderBook` (WS store), `getBinaryOrderBook` / `getMarketOnchain` (RPC) disagree under load.
+On-chain `Locked` / `Resolved` does not update my `trades` rows. Display used an expiry-aware count; persist/risk counted every `pending | submitted | partially_filled | filled` row. Users saw Active (4) of max 10, then `/trade` returned “Position limit reached” because stale submitted/filled rows on expired markets still occupied slots.
 
-We listed from the indexer, then read books on the shared WS, then the matcher executed against a third view. IOC no-fill and PostOnlyWouldCross both happen in that gap. 1m windows (30s eligibility, 90s skip for early-exit) make the gap visible.
+No-hash SDK failures left `submitted` and hogged a slot. Stale-pending cleanup only expired `pending` with no hash and no fill.
 
-There is no SDK helper for “is this store book fresh enough to TAKE?” We invented `book_stale` / `no_usable_ask` / `insufficient_liquidity` in app code. Those names then leaked into Telegram until we mapped them.
-
-**Ask:** a freshness timestamp on live books, and a documented rule for when the store is authoritative vs when you must `eth_call`.
+Copy trap: system max is 10, user default is 1. Help quoting “max positions 10” looks like the user’s cap.
 
 ---
 
-## 7. Gas: treasury sponsor vs `@somnia_helper_bot`
+## What I fixed
 
-Shannon needs STT. We sponsored once at wallet creation (`INITIAL_STT_SPONSOR`). That is the right onboarding UX.
-
-We also added automatic replenish on later submits (sponsor → retry). That:
-
-- spends treasury with no cap
-- retries a tx that may not be a gas failure
-- taught users that Sentry magically tops up STT
-- fought the intended helper-bot flow
-
-Removing replenish without updating copy was its own bug: Telegram still said “Sentry sponsors STT gas when the wallet is short.”
-
-**Ask:** one recommended pattern in the hackathon docs. Either “bots may sponsor gas” with a faucet/treasury recipe, or “users must use `@somnia_helper_bot`” with a copy-paste snippet. Mixing both in the same weekend created support load. Also: a cheap `balanceOf(STT)` helper on the session so we do not find out from the revert.
-
----
-
-## 8. Position lifecycle vs “open slots”
-
-Event contracts expire. Trade rows do not, until a finalization worker settles them.
-
-We had two counters:
-
-- Display (`/positions`, dashboard): expiry-aware, hide resolved/expired
-- Risk / persist: `count(*)` where status in `pending | submitted | partially_filled | filled`
-
-Users saw **Active (4)** with max 10, then `/trade` returned “Position limit reached.” The extra six were stale submitted/filled on expired markets waiting on a global finalization `limit: 40`.
-
-Stale-pending cleanup only expired `pending` with **no hash and no fill**. A no-hash SDK failure left `submitted` and hogged a slot until we changed that path to fail closed.
-
-**Ask:** this is app-level, but it is the default trap for anyone persisting CLOB fills. A note in the lifecycle docs — “Trading status ending does not close your off-chain order row” — would have been enough.
-
-Related product copy trap: system max open positions is 10, **user default is 1**, DB check allows ≤ 20. Help quoting “max positions 10” makes users think they are capped at the system number.
+- Coalesced `subscribeLive` scans (250ms) and debounced engine wakes to 8s for every opportunity kind, including `book_change`.
+- Split ticks: WS → `trading` (discovery → strategy → risk → execution). 6-minute loop → `full` (plus early-exit, claims, UTC-day pause). WS ticks do not `markAutonomousScan`, so the fallback still runs.
+- Stopped Telegram on `no_enter` / book-miss / empty success.
+- Kept the `WatchHandle` and stop it with the bus.
+- One shared read `SomniaMarkets`; per-user write sessions opened and closed around sign/submit.
+- No-hash SDK failures now fail the row closed so the slot is released.
+- Integer-tick would-cross when decimals are known; adapter re-reads before sign; on-chain `PostOnlyWouldCross` maps to “Not filled,” not gas.
+- Removed later STT replenish. Creation sponsor stays. Copy points at `@somnia_helper_bot`.
+- Open-position count for risk/persist is the same expiry-aware helper as `/positions`.
+- Autonomous fallback no longer interpolates `result.code`. Unknown SDK notes are dropped, not sliced into Telegram.
+- Network/allowance Telegram copy is only the short stable message plus `@iamsuperflly`.
 
 ---
 
-## 9. UTC day vs leftover timezone
+## What remains
 
-We added per-user timezone, then tore it out. PnL, daily halt, autonomous pause, faucet `date_trunc`, and the end-of-day report are all **UTC midnight**. That is consistent.
-
-What remained and caused a second investigation:
-
-- column `timezone` still on `user_settings`
-- helpers named `calendarDateInZone`, `getZonedDayBounds`, `isInstantInLocalDay`, `last_autonomous_local_date`
-- `/status` printing `Timezone: ${settings.timezone}` while the code `void`s the zone argument
-- tests that **assert** `Africa/Lagos` is ignored
-
-The names lied. We almost “fixed” a UTC/local split that did not exist.
-
-**Ask:** if the platform day is UTC, say so in the starter and do not ship timezone columns in example schemas.
+- Residual TOCTOU: the matcher can still move between the last local book read and inclusion. I fail closed; I cannot promise the store book is the matcher book.
+- WS trading ticks still cold-list rather than reading `getLiveMarkets` + `getLiveBinaryOrderBook` as the source of truth. Amplification is reduced, not eliminated.
+- `close()` hanging past the 2s timer can still leave internals around under load.
+- Early-exit sell still uses `ORDER_TYPE.MARKET` (comment historically said IOC). I did not change that mid-hackathon.
+- `user_settings.timezone` and helpers named `calendarDateInZone` / `isInstantInLocalDay` remain; application code ignores them. PnL, halt, faucet, and the daily report are UTC midnight. I almost “fixed” a local/UTC split that did not exist.
+- Invalid top-of-book (`levels[0]` unusable) still needs a walk to the first valid `(0,1)` ask. Integer-tick compare is in; deeper-level walk is not fully closed.
 
 ---
 
-## 10. Telegram as a trading UI
+## Recommendations to the SDK team
 
-Things that sound small and were not:
+1. Document `subscribeLive` as head-cadence store commits, not market/book events. A filtered or coalesced callback (Trading binaries, or log-batch only) would match how bots actually use it.
+2. Make `watchMarket` on the current live BTC/ETH set the documented default. Warn that `watchMarkets({ discover: true })` is the entire indexer.
+3. Document one long-lived read client, short-lived write sessions with an explicit signer, and `close()` that completes. A public “is this client bound to a wallet?” check would have saved a day. `unreachable` / InvariantError are too vague to persist or show users.
+4. Expose raw tick prices on live book levels (`bigint`) and a `wouldCross(side, limitRaw)` helper. Document `PostOnlyWouldCross` as a pool invariant, not “maker if possible.” One sentence that `MARKET` (2) is the IOC-style take would have avoided reverse-engineering `ORDER_TYPE`.
+5. Stable `placeOrder` error codes (`NO_FILL`, `WOULD_CROSS`, `NO_GAS`, `NOT_CONNECTED`, `NO_WALLET`) in addition to revert selectors. A `classifyPlaceOrderError(err)` would stop every bot from writing the same regexes.
+6. A freshness timestamp on live books, and a rule for when the store is authoritative vs when you must `eth_call`. The hot path should not re-RPC the tail socket to “confirm” a WS event.
+7. One STT story in the hackathon docs: sponsor once **or** `@somnia_helper_bot`, not both by accident. A cheap STT `balanceOf` on the session beats discovering gas from the revert.
+8. Lifecycle note: on-chain `Locked` / `Resolved` does not update the caller’s database. If the platform day is UTC, say so and do not ship unused timezone columns in example schemas.
 
-- Explorer links as raw `Tx: https://shannon-explorer…/0x…` in private chats. Users need **View transaction**, not a 80-character URL. HTML `<a>` requires `parse_mode: HTML` on every reply that includes one; mixing `<` from adaptive-band copy (`<0.55→25%`) with HTML parse mode breaks messages.
-- WALLET truncated `0x1234…abcd`. There is no `/wallet` command. Users could not copy the address without `/status`. Telegram `copy_text` exists; we already used it for private keys and forgot it for the address.
-- Autonomous notify on every empty scan trains users to mute the bot, then they miss fills.
-- Network/allowance copy grew extra sentences. Organizers (and users) wanted a short, stable message and a human to ping. SDK strings must never be the body.
-- Button Settings vs slash `/settings adaptive`. Features that only exist as slash commands are invisible.
-
-grammY itself was fine. The constraint is: the bot process **is** the trading engine. Any WS amplification is a UX outage.
-
----
-
-## 11. Early-exit and settlement races
-
-Early-exit is autonomous-only: 50% of (expiry − fill) elapsed **and** 50% unrealized loss vs entry, then a live sell.
-
-Bugs we found in our own code, not the SDK:
-
-- List was status-only. Expired inventory was still “managed” if finalization had not run.
-- Formatter inferred side from `symbol.includes("down")`. ETH UP rendered wrong. A second unused formatter already had `direction`.
-- Failed sells put `error.message` on the row. Positions then showed raw SDK text unless sanitization matched.
-- Comment said IOC-sell; code used `ORDER_TYPE.MARKET`.
-- POST_ONLY resting stays `submitted` with a `post_only_resting` note, so it is correctly **not** in the early-exit list until it fills. Easy to miss when debugging “why didn’t it exit.”
-
-Settlement PnL from `winningOutcome` + filled contracts is the right model. Reconstructing it off-chain when `settled_at` and `created_at` straddle UTC midnight made daily win rate easy to define two different ways. We scoped the report to `settled_at` in the UTC day.
-
----
-
-## 12. Docs, examples, and versioning
-
-- SDK 0.29.0 is what we targeted. Examples and types around watch/live/orderType needed more than a changelog bump. ORDER_TYPE numeric values, `subscribeLive` semantics, and POST_ONLY reverts were learned from source and mainnet-shaped testnet reverts.
-- Node engine: local/CI Node 22 vs `engines.node: 24.x` warning. Not blocking, noisy, easy to ignore until something native fails.
-- Railway: long-lived WS + `watchBlocks({ emitMissed: true })` + listing RPCs on one socket is a bad neighbor. Horizontal replicas would duplicate watchers; we stayed single-process and serialized ticks. That should be in a “bots in production” note.
-- Shannon explorer, tUSDC, OutcomeToken6909, RPC/WS URLs were findable. Collateral decimals and tick/lot/minQuantity per market were not obvious until we snapped in app code (`snapBinaryPrice` / `snapBinaryAmount`).
-- Event contracts can go to zero. IOC often does not fill. That is correct protocol behaviour. User copy has to treat no-fill as success-shaped (“nothing taken”), not as a crash.
-
----
-
-## 13. What went well
-
-- Per-user wallets (user signs, treasury never trades) is the right security model once write sessions are isolated.
-- Deterministic strategy (1m Binance XOR + edge-taker vs 0.50) is testable. Dropping the LLM from the trade path removed a class of “AI said skip” bugs.
-- Injectable live-execution deps meant POST_ONLY, gas, and no-hash failures could be unit-tested without Shannon.
-- grammY + a persistent reply keyboard is a workable trading UI if you keep autonomous notifies quiet.
-- `@somnia_helper_bot` is the right long-term STT story if onboarding still sponsors the first fill.
-
----
-
-## 14. Concrete asks for the next cohort
-
-1. Document `subscribeLive` as head-cadence store commits. Give a coalesced / filtered API.
-2. Recommend `watchMarket` on the current BTC/ETH Trading set, not `watchMarkets({ discover: true })` of the whole indexer.
-3. One read client, explicit per-user write sessions, `close()` that completes, hashed vs no-hash error classification.
-4. Raw tick book levels + `wouldCross` + stable placeOrder error codes (`NO_FILL`, `WOULD_CROSS`, `NO_GAS`, `NOT_CONNECTED`).
-5. Book freshness on the live store so bots do not re-RPC the tail socket to “confirm” a WS event.
-6. One STT story in the hackathon README (sponsor once vs helper bot), not both by accident.
-7. A short lifecycle note: on-chain `Locked`/`Resolved` does not update your database.
-8. Say the trading day is UTC if that is what faucets and examples use.
-
-Happy to walk through any of the above against the Sentry repo. The painful parts were almost all “the live path is chatty and the error path is a string.”
+The live path is chatty. The error path is a string. Those two facts caused most of the production bugs.
