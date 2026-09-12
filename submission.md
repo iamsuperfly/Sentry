@@ -55,3 +55,5 @@ pnpm run typecheck
 ```
 
 See [README.md](README.md) for env, network addresses, and the full pipeline.
+
+Development challenges and SDK/protocol bugs we hit: [feedback.md](feedback.md).
